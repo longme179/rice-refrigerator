@@ -19,7 +19,7 @@
 - R1 One-command backup: authenticate → prompt for target repo name → dry-run summary (what will be
   uploaded; what was excluded, names only) → confirmation → push.
 - R2 Flags: --dry-run, --yes, --include-system.
-- R3 Auth: prefer `gh auth login` (web/device flow) when gh is available; otherwise prompt for a PAT
+- R3 Authentication: prefer `gh auth login` (web/device flow) when gh is available; otherwise prompt for a PAT
   with hidden input. Token lives only in memory or a 0600 temp file removed by a trap on exit; never in
   repo, URL, args or logs.
 - R4 Target repo: create PRIVATE if missing. If it exists and is public → warn + typed confirmation.
@@ -47,10 +47,10 @@
   sandbox reset ask for it again and wait. Never search the filesystem for it.
 - S4 Before EVERY push: secret scan over the staged diff AND the full tree (scanner lives in
   scripts/). Patterns: ghp_/gho_/ghs_/github_pat_, "BEGIN ... PRIVATE KEY", AWS keys, bearer tokens,
-  password=/token= assignments, plus exact match on the current PAT value. Install as git pre-push
-  hook AND call explicitly. On a hit: do not push; rewrite local history if already committed; if it
-  may have reached the remote tell the user to revoke immediately; record the incident without the
-  secret value.
+  password and token value assignments, plus exact match on the current PAT value. Install as git
+  pre-push hook AND called explicitly. On a hit: do not push; rewrite local history if already
+  committed; if it may have reached the remote tell the user to revoke immediately; record the
+  incident without the secret value.
 - S5 Push only to the workspace repo, never force-push, never touch other repos. (Tool runtime
   equivalent: push only to the user-confirmed https://github.com repo; never force.)
 
@@ -216,11 +216,12 @@ Three layers, precedence L1 > L2 > L3; every exclusion is reported by name (+ ru
 - L2 content scan (S4 patterns + extras; hit → exclude + rule name):
   rules: gh-classic (ghp_/gho_/ghs_/ghr_), gh-fine-pat (github_pat_...), private-key, aws-access-key
   (AKIA...), aws-secret-label, google-api-key (AIza...), slack-token (xox...-), stripe-key
-  (sk_live_...), jwt (eyJ...), bearer, cred-assign (password/passwd/secret/token/api_key/apikey/
-  client_secret/auth + = or : + non-placeholder value), url-creds (scheme://user:pass@host),
+  (sk_live_...), jwt (eyJ...), bearer, cred-assign (keyword assignments: password, token, secret,
+  api key, auth and friends, followed by a non-placeholder VALUE), url-creds (URLs carrying embedded
+  userinfo), exact (RICE_SCAN_EXACT, e.g. the current PAT).
   exact (RICE_SCAN_EXACT, e.g. the current PAT).
-  placeholder whitelist for cred-assign values: true false null none changeme placeholder example
-  required optional enabled disabled yes no — plus values starting with $ ( { < (indirection).
+  placeholder whitelist for cred-assign values: a small fixed list of obvious placeholders plus
+  values beginning with $ ( { < (shell/config indirection).
 - L3 hygiene: cache components (.cache .npm __pycache__ node_modules cache Cache caches Trash
   .git), files > 50 MB → SKIPPED.md; total-size warning threshold 800 MiB (needs --yes to proceed).
 
