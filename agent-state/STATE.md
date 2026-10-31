@@ -260,3 +260,7 @@ over recollection. Never write secrets here.
   tokens). Push happens as soon as the PAT lands in env.
 - [s7] PENDING: final docs/deliverable commit (this one) + push + 0.2.0
   tarball into download/.
+- [s7] AMENDED (final): five local commits await the push (d6b2f05 backend
+  hooks, 1e512ed GUI M0-M2, 089759c records, 4e7ebdc contract rig, 42f7bc3
+  launcher exec bit); suite 317/0, S4 tree scan unexpected=0, worktree clean,
+  tarball rebuilt from HEAD 42f7bc3 (155 files, gui/rice-gui mode 755).
