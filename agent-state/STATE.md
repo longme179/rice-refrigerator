@@ -133,3 +133,16 @@ over recollection. Never write secrets here.
   files, .zen profile, fcitx dbus junk, gnome-extensions mock.
 - [s3] RAN profiling: `secret-scan.sh git HEAD` = 16.9 s (pre-fix) → 0.042 s (post-fix);
   full backup run 34.5 s → 0.96 s (evidence in journal 03).
+- [s3] RAN `bash tests/run-tests.sh` → **passed: 275 failed: 0, exit 0** (T01–T21 incl.
+  all session-3 regressions; 22 s wall time). Log /tmp/suite7.log.
+- [s3] RAN final audit: tree scan unexpected=0 (30 EXPECTED canaries); history scan =
+  only the two documented benign PLAN.md phrases; t20 filter green.
+- [s3] RAN containers.sh check → NOT RUN (podman/docker absent, unchanged from s2);
+  shellcheck absent → t17 fallback lint green (NOT RUN: shellcheck).
+- [s3] COMMIT 4cc4c1b (local; push pending the user's PAT per S3). [RE-CREATED 2026-10-31
+  as 63c8af7: a sandbox rollback destroyed the unpushed original together with its git
+  objects; the tree was restored byte-exact from the release tarball and the suite re-run
+  green (275/0) before committing. See journal 05.]
+- [s3] RAN tarball build: download/rice-backup-0.1.1.tar.gz (git archive HEAD, 140 files).
+- REMAINING: user re-supplies PAT → push 4cc4c1b (+ this agent-state commit) →
+  re-scan exact-needle over tree+history with the real PAT before and after the push.
