@@ -161,3 +161,38 @@ over recollection. Never write secrets here.
 
 ## Session-4 result log (append-only)
 - (to be appended as steps complete)
+- [s4] RAN git status — no backend file touched this session (only GUI-PLAN.md,
+  DECISIONS, journal 04, STATE).
+- [s4] RAN S4 gate before commit: `scripts/secret-scan.sh --expect tests/scan-expect.txt
+  tree .` → unexpected=0; history mode → only the two documented benign Phase-0 phrases.
+- [s4] COMMIT 6de3588 (local; push still pending the user's PAT, S3). [RE-CREATED 2026-10-31
+  as dea5b6e after the sandbox rollback; see journal 05 / D31.]
+- [s4] DELIVERED: GUI-PLAN.md (repo, canonical EN) + a GUI-plan reading copy in
+  download/ (Vietnamese at the time; replaced by an English copy in session 5 per D30).
+  DECISIONS D23-D27 recorded as PROPOSALs.
+- NEXT (when user says go): implement M0/M1 per GUI-PLAN.md; adapter unit tests run
+  headless here; widget work ships with a manual checklist; push all pending commits as
+  soon as the user re-supplies a scoped PAT.
+
+## Session 5 — 2026-10-31 (rollback recovery, GUI decisions locked, first successful push)
+
+## NEXT ACTION (write-ahead) — session 5, current
+- Recover from the sandbox rollback (see journal 05 / D31): re-create 4cc4c1b from the
+  release tarball, a1a0fc8 + 6de3588 from context; suite green; S4 gates green.
+- Apply the user's session-5 decisions: D28 (G1 confirmed), D29 (M3 deferred),
+  D30 (English only) in GUI-PLAN.md + DECISIONS + this STATE.
+- Materialize the re-supplied PAT per S2/S3; validate; exact-needle pre-push scans;
+  push everything; post-push scans; rebuild download/ deliverables; final commit + push.
+
+## Session-5 result log (append-only, evidence commands)
+- [s5] RAN rollback assessment: git log/reflog/fsck — commits 4cc4c1b, a1a0fc8, 6de3588
+  and their objects GONE; journals 03-05 gone; download/ back to the 0.1.0 tarball.
+- [s5] RAN recovery: extracted /tmp/my-project/download/rice-backup-0.1.1.tar.gz
+  (archive of the lost 4cc4c1b) over the tree; staged diffstat matched the original
+  exactly (21 files, +390/-47). Suite 275/0 after restoring fixture disk modes
+  (private.conf 600, myscript 755 — the tarball carried g+w-corrupted modes).
+- [s5] RAN S4 gates: tree scan unexpected=0 (30 EXPECTED); history = only the two
+  documented benign Phase-0 phrases.
+- [s5] COMMITS re-created: 63c8af7 (=4cc4c1b), 33628ad (=a1a0fc8), dea5b6e (=6de3588),
+  each carrying a re-creation note in its message.
+- (push + deliverables logged below as they complete)

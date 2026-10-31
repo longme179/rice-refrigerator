@@ -3,8 +3,9 @@
 Status: **PLANNED — nothing implemented yet.** This document is the development plan for
 a graphical frontend. The backend is the existing `bin/rice-backup.sh` and
 `bin/rice-restore.sh`, which this plan does **not** modify (the user is testing the
-backend separately). Written in session 4 (2026-10-31); decisions are recorded as
-D23–D27 in `agent-state/DECISIONS.md` and marked PROPOSED until implementation starts.
+backend separately). Written in session 4 (2026-10-31), amended in session 5 after the
+user locked the open decisions: G1 stack confirmed (D28), M3 deferred (D29), and the
+language is English only (D30). Proposals D23–D27 stand as written.
 
 ---
 
@@ -15,9 +16,10 @@ Goals:
 - A point-and-click flow for the whole backup story: setup → dry-run review → run →
   result, with the same safety posture as the CLI (dry-run first, exclusions visible,
   size budget, public-repo typed confirmation).
-- Later (M3): a restore window — section picker, conflict-backup notice, generated
-  package script preview, UNMAPPED list — without the GUI ever running anything with
-  sudo.
+- Later (M3, **deferred**): a restore window — section picker, conflict-backup notice,
+  generated package script preview, UNMAPPED list — without the GUI ever running anything
+  with sudo. Deferred at the user's direction until a real backup exists to restore
+  (D29); the CLI restore path is the supported flow until then.
 - The GUI is an **optional layer**: the CLI stays first-class, fully portable, and the
   supported path on headless/fresh machines.
 
@@ -53,8 +55,8 @@ or daemon; scheduled/automated backups; multi-machine remote management. These l
 | Qt / PySide | opt | opt | opt | large | full | med | heavier optional dep on GNOME boxes |
 | Tauri / Electron | – | – | – | build toolchain + bundle | full | high | violates C3 outright |
 
-**Decision G1 (user-overridable): Python + PyGObject, GTK4, with libadwaita when the
-`gi` repository `Adw` imports, plain GTK4 otherwise.** Rationale: the user's machine is
+**Decision G1 — CONFIRMED by the user (D28): Python + PyGObject, GTK4, with libadwaita
+when the `gi` repository `Adw` imports, plain GTK4 otherwise. This is the main track.** Rationale: the user's machine is
 Fedora 44 GNOME and both default distros are GNOME; real widgets matter for a 3600-row
 reviewable file list and a live log; python3 also exists in the development sandbox so
 the parsing layer is testable headless. The architecture (§4) isolates everything
@@ -220,7 +222,7 @@ Result window: `backup pushed: commit <sha> → https://github.com/OWNER/REPO`, 
 counts, pointers to `reports/EXCLUDED.md` and `reports/SKIPPED.md` in the repo, buttons
 `Open repository` (xdg-open), `View log`, `Close`.
 
-Restore window (M3):
+Restore window (M3 — deferred until a real backup exists, D29):
 
 ```
 ┌─ Restore ──────────────────────────────────────┐
@@ -278,10 +280,11 @@ Interaction rules (safety posture, mirroring the CLI):
 | M0 | spike: window + threaded dry-run + live log | window never freezes while dry-run streams; lines arrive live; child exit code surfaced; cancel works pre-push | 0.5 d |
 | M1 | dry-run review + setup window | parsed sections/exclusions/largest render; 3600-row list scrolls smoothly and is searchable; budget banner + oversize switch; PAT entry hidden; adapter unit tests green headless (canned outputs, incl. the real Fedora-shaped dry-run captured from the user's machine fields) | 2 d |
 | M2 | run flow | progress phases; public-repo prompt relay modal; result window; exit-code dialogs (1/2/3/4/5) with correct guidance; stale-staging cleanup offer | 1.5 d |
-| M3 | restore GUI | task 1: capture `rice-restore` dry-run contract from `lib/restore.sh` and lock anchors; inspect view with meta; section checkboxes; apply per-section; conflict-backup path shown; generated script preview read-only; UNMAPPED verbatim | 2 d |
-| M4 | polish | i18n en+vi (gettext; strings frozen after M3); `.desktop` + icon (optional); `README-GUI.md` with per-distro dependency table; final GUI security checklist walk-through | 1 d |
+| M3 | restore GUI — **DEFERRED until a real backup exists (D29); not scheduled** | task 1 (when lifted): capture `rice-restore` dry-run contract from `lib/restore.sh` and lock anchors; inspect view with meta; section checkboxes; apply per-section; conflict-backup path shown; generated script preview read-only; UNMAPPED verbatim | 2 d |
+| M4 | polish | English-only UI copy pass (D30 — no gettext layer); `.desktop` + icon (optional); `README-GUI.md` with per-distro dependency table; final GUI security checklist walk-through | 1 d |
 
-Total ≈ 7 focused days. Every milestone ends with: `python3 -m py_compile` on all GUI
+Current scope is ≈ 5 focused days (M0 → M1 → M2 → M4); lifting the M3 deferral adds
+~2 d later. Every milestone ends with: `python3 -m py_compile` on all GUI
 files, adapter tests re-run, manual checklist for the user, S4 tree scan, commit.
 GUI code lives in the same repository, so the secret scanner and pre-push gate cover it
 automatically.
@@ -314,13 +317,15 @@ automatically.
 | libadwaita absent | low | guarded import; plain GTK4 widgets |
 | GUI lulls users into skipping dry-run | medium | the review window IS the dry-run; "Start backup" without a fresh dry-run asks to re-run it first |
 
-## 11. Open decisions for the user
+## 11. Decisions resolved (session 5, 2026-10-31)
 
-- **G1 stack:** confirm PyGObject/GTK4 as the main track (the plan is written so the
-  stdlib-web alternative can replace the window layer later with the adapter intact).
-- **M3 timing:** scheduled after M2 in this plan; it can be deferred until the user has
-  real-world backup history to restore.
-- **i18n:** English + Vietnamese proposed; more languages later via gettext.
+- **G1 stack: RESOLVED — CONFIRMED.** PyGObject/GTK4 is the main track (D28). The plan
+  still keeps the stdlib-web alternative cheap to adopt later (adapter.py stays
+  display-free).
+- **M3 timing: RESOLVED — DEFERRED.** The restore GUI waits until the user has real
+  backup history to restore (D29). Milestone order is now M0 → M1 → M2 → M4 → (M3 when
+  lifted).
+- **i18n: RESOLVED — ENGLISH ONLY.** No translation layer in M4 (D30).
 
 ## 12. Out of scope / future ideas
 

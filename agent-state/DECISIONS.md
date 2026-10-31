@@ -148,3 +148,22 @@ Format: [DECISION] / [ASSUMPTION] with ID, date, reason.
 - [PROPOSAL] D27 2026-10-31 — gui.conf (~/.config/rice-backup/gui.conf, configparser,
   0600) stores ONLY repo owner/name, window geometry and UI preferences — nothing
   credential-shaped; explicitly safe for the backup itself to collect (L2 scans it anyway).
+
+## Session 5 additions (user locks the GUI plan decisions)
+
+- [DECISION] D28 2026-10-31 — G1 CONFIRMED by the user: Python + PyGObject (GTK4,
+  libadwaita when importable) is the main GUI track. D23–D27 stand as proposed; the
+  stack question in GUI-PLAN.md §11 is closed.
+- [DECISION] D29 2026-10-31 — M3 (restore GUI) is DEFERRED until the user has a real
+  backup to restore. Milestone order: M0 → M1 → M2 → M4 → (M3 when lifted). The CLI
+  restore path remains the supported flow meanwhile.
+- [DECISION] D30 2026-10-31 — Language policy: English only for GUI strings, README,
+  deliverables and agent reports from now on. The Vietnamese reading copy of the GUI
+  plan in download/ is replaced by an English copy; no gettext/i18n layer in M4.
+- [DECISION] D31 2026-10-31 — PROCESS (sandbox rollback): between sessions 4 and 5 the
+  sandbox was restored to an old snapshot, destroying the three UNPUSHED local commits
+  (4cc4c1b tool fixes, a1a0fc8, 6de3588) together with their git objects and the
+  session-3/4 journals. Recovery combined the release tarball (byte-exact archive of
+  4cc4c1b, found in the sandbox staging area) with the session-4 documents held verbatim
+  in the agent context. Lesson made a standing rule: PUSH AT EVERY GREEN MILESTONE —
+  local-only commits are one recycle away from loss.
