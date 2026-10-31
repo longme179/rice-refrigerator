@@ -38,6 +38,7 @@ CAN_STRIPE="sk_live_$(rep D 24)"         # stripe-live-key rule needs >= 20
 CAN_JWT="eyJ$(rep A 12).$(rep B 12).$(rep C 12)"   # jwt rule: eyJ{10,}.{10,}.
 CAN_BEARER="$(rep Ab 11)"                # bearer rule needs >= 20
 CAN_CREDTOKEN="0123456789abcdefghij"     # cred-assign value (not a placeholder)
+CAN_CREDPW="supersecret$(rep 9 3)"      # second cred-assign value (generated)
 CAN_URLUSER="alice:hunterpass"           # url-embedded-creds userinfo
 CAN_EXACT="RICECANARYEXACTSECRETVALUE42" # exact-needle canary (RICE_SCAN_EXACT)
 # PEM headers are assembled from split pieces so that THIS file (which is
@@ -56,7 +57,7 @@ mkdir -p "$H/.config/weird" "$H/.config/cloud" "$H/.config/chat" "$H/.config/pay
   "$H/.config/api" "$H/.config/creds" "$H/.config/net" "$H/.config/misc" "$H/.config/gh" \
   "$H/.aws"
 
-printf 'token = %s\npassword = supersecretvalue99\n' "$CAN_CREDTOKEN" > "$H/.config/myapp/token.ini"
+printf 'token = %s\npassword = %s\n' "$CAN_CREDTOKEN" "$CAN_CREDPW" > "$H/.config/myapp/token.ini"
 printf '%s\n' "$CAN_FGPAT" > "$H/.config/weird/github-pat"
 printf '%s\n' "$CAN_GHP" > "$H/.config/weird/gh-token"
 printf '%s\naws_secret_access_key = %s\n' "$CAN_AKID" "$CAN_AWSSECRET" > "$H/.config/cloud/aws-creds.txt"
@@ -252,7 +253,7 @@ chmod 755 "$MM"/*
   printf '%s\n' "$CAN_URLUSER"    # 12 url-embedded-creds
   printf '%s\n' "$CAN_EXACT"      # 13 exact needle
   printf '%s\n' 'netrcfakepassword'
-  printf '%s\n' 'supersecretvalue99'
+  printf '%s\n' "$CAN_CREDPW"       # 15 second cred-assign value
   printf '%s\n' 'envfake1234567890'
   printf '%s\n' 'ZmFrZTpmb2tl'
   printf '%s\n' 'envfakepass'
