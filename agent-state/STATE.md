@@ -67,10 +67,14 @@ over recollection. Never write secrets here.
   canaries (0 real-PAT matches, verified by value comparison without printing them).
 
 ## NEXT ACTION (write-ahead) — session 2, current
-- Commit the milestone (bin/ lib/ scripts/ tests/ README + agent-state) and push to origin/main
-  with the S4 gate: explicit tree+history scans AND the upgraded range-scanning pre-push hook.
-- Then: final audit (scanner tree+history with the real PAT as exact needle), release tarball into
-  /home/z/my-project/download/, final Vietnamese report (RAN vs NOT RUN).
+- DONE 2026-10-31: milestone pushed — origin/main now at 9f605b0 (6 commits: 3 from session 1 +
+  55ced76 tool+suite+README, d0ab5f7/9f605b0 generator hygiene). Final audit RAN clean: tree
+  scan unexpected=0; history scan = ONLY the two documented benign Phase-0 phrases; the
+  exact-needle scan with the real PAT is clean over tree AND full history (exact=on).
+- DONE: release tarball /home/z/my-project/download/rice-backup-0.1.0.tar.gz (git archive of
+  9f605b0, 124 files).
+- REMAINING: final Vietnamese report to the user (RAN vs NOT RUN + first-run checklist).
+- Next session start: re-run the four checks above; everything was green at 9f605b0.
 
 ## Session-2 result log (append-only, evidence commands)
 - [s2] RAN `bash tests/run-tests.sh` → **passed: 246 failed: 0, exit 0** (T01–T20, all acceptance
