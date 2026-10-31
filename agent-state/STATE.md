@@ -312,3 +312,29 @@ over recollection. Never write secrets here.
   parse + 5 new tests; docs. See journal 08 for the found-and-fixed bugs
   (ancestor duplication, report field order, link count) and the ln -s
   sandbox block (git-blob mklink workaround, scripts outside the repo).
+
+## Session 8 — push record (final)
+- [s8] PUSHED: all session-8 work is on origin/main at 9e5dd43 (D37 symlink
+  following + session records). Auth per S1-S3: the user's PAT arrived in chat;
+  materialized to /tmp/rice-auth/.pat (0600, dir 0700, outside the repo and
+  outside my-project) with a non-echoing printf; env.sh recreated (env-only
+  equip shell; the shell recycles BETWEEN tool calls, so env + git must live
+  in ONE command); validated via api.github.com (HTTP 200, login longme179)
+  before any push. Value never echoed, never in any output, URL, commit or
+  workspace file.
+- [s8] RAN pre-push gates with exact-needle ON (RICE_TOKEN in env): suite
+  re-run 356/0 after fixture rebuild; tree scan unexpected=0 (31 EXPECTED
+  canaries); full history = ONLY the two documented Phase-0 PLAN.md phrases;
+  per-commit scan over 262b4b9..9e5dd43: 2/2 commits clean; the pre-push hook
+  re-enforced the same live during the push.
+- [s8] RAN `git push origin main` → **262b4b9..9e5dd43 main -> main**. Post-push:
+  fetch-verified origin/main == HEAD; exact-needle scans CLEAN over tree AND
+  history (0 exact hits with the real PAT).
+- [s8] SESSION CLOSED: symlink following (D37) shipped as 0.3.0; deliverable
+  download/rice-backup-0.3.0.tar.gz (rebuilt from the final records commit,
+  suite re-verified from the tarball). NEXT (user, real machine): re-run the
+  backup with 0.3.0 — home/.config/quickshell/lme-shell is now followed (real
+  content fetched) unless its target is deny-listed; check reports/SYMLINKS.md
+  and symlinks.tsv after the run; restore-side `--relink` recreates the layout;
+  consider making the backup target repo private; GUI manual checklist in
+  gui/README-GUI.md; M3 restore GUI stays deferred (D29).
