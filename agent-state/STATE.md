@@ -264,3 +264,23 @@ over recollection. Never write secrets here.
   hooks, 1e512ed GUI M0-M2, 089759c records, 4e7ebdc contract rig, 42f7bc3
   launcher exec bit); suite 317/0, S4 tree scan unexpected=0, worktree clean,
   tarball rebuilt from HEAD 42f7bc3 (155 files, gui/rice-gui mode 755).
+
+## Session 7 — push record (final)
+- [s7] PUSHED: all session-7 work is on origin/main at d241b02 (backend 0.2.0
+  hooks D32/D33, GUI M0-M2 with tick/skip + sessions + archive export,
+  records, contract rig, launcher exec bit). Auth per S1-S3: PAT from the
+  user's chat message went to the shell environment ONLY; GIT_ASKPASS helper
+  under /tmp/rice-auth (out of repo, 0700); value never echoed, never written
+  to any file/URL/commit/log. NOTE: the sandbox shell recycles BETWEEN tool
+  calls (env does not persist across calls) - the export + push must live in
+  ONE command.
+- [s7] RAN pre-push S4 gate: tree scan unexpected=0 with exact-needle ON;
+  history scan (with expect) = the two documented Phase-0 phrases only;
+  pre-push hook simulated over the exact push range: 6/6 commits PASS; hook
+  then enforced it live during the push (unexpected=0 per commit).
+- [s7] RAN post-push verification: origin/main == local HEAD; exact-needle
+  scans (real PAT value as needle) CLEAN over tree AND history.
+- [s7] SESSION CLOSED: suite 317/0; deliverable
+  download/rice-backup-0.2.0.tar.gz. NEXT (user, real machine): the 10-point
+  manual GUI checklist in gui/README-GUI.md; consider making the real backup
+  target repo private; M3 restore GUI stays deferred (D29).
