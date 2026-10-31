@@ -146,3 +146,18 @@ over recollection. Never write secrets here.
 - [s3] RAN tarball build: download/rice-backup-0.1.1.tar.gz (git archive HEAD, 140 files).
 - REMAINING: user re-supplies PAT → push 4cc4c1b (+ this agent-state commit) →
   re-scan exact-needle over tree+history with the real PAT before and after the push.
+
+## Session 4 — 2026-10-31 (GUI frontend plan, no implementation)
+
+## NEXT ACTION (write-ahead) — session 4, current
+- The user asked for a DEVELOPMENT PLAN for a GUI frontend on top of the two existing CLI
+  scripts (backend explicitly out of scope; the user will test the backend separately).
+- Deliverables: GUI-PLAN.md (canonical, English, repo root) + Vietnamese reading copy in
+  download/rice-backup-GUI-plan-VI.md + DECISIONS D23-D27 (PROPOSED) + journal 04.
+- Constraints to honor in the plan: CLI stays first-class and portable (original
+  git+interpreter-only rule applies to the CLI path, GUI is an optional layer with graceful
+  degradation); S1-S5 inherited plus GUI-specific token rules; no pip/npm/build toolchain.
+- No backend file may be modified in this session. Commit locally; push still waits for PAT.
+
+## Session-4 result log (append-only)
+- (to be appended as steps complete)

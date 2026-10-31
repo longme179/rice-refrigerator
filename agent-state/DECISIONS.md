@@ -120,3 +120,31 @@ Format: [DECISION] / [ASSUMPTION] with ID, date, reason.
   users this tool targets (configs, themes, fonts, wallpapers); heavy-media users have
   --allow-oversize and RICE_TOTAL_MAX_BYTES. Revisit if real-world dry-runs routinely exceed
   it with legitimate rice content.
+
+## Session 4 additions (GUI frontend plan — all PROPOSED, no implementation yet)
+
+- [PROPOSAL] D23 2026-10-31 — The GUI is an OPTIONAL layer. The original portability rule
+  (fresh distro, git + default interpreter, no third-party pip/npm) is SCOPED to the CLI
+  path, which stays fully portable and first-class. The GUI may require optional system
+  packages but must self-check at startup and exit with exact per-distro install commands.
+  Rationale: a GUI cannot honestly promise "runs anywhere with git" on all three distros;
+  scoping the promise keeps it honest while the CLI guarantee is untouched.
+- [PROPOSAL] D24 2026-10-31 — Stack: Python + PyGObject (GTK4, libadwaita when importable,
+  plain GTK4 otherwise), files under gui/, launched standalone; no pip/npm/compile steps.
+  Alternatives were scored (stdlib-web UI, zenity, Qt, Tauri/Electron) — see GUI-PLAN.md
+  §3. The stdlib-web option is the strongest future alternative (SSH/headless use) and is
+  kept cheap to adopt later because adapter.py is display-free. User may override G1.
+- [PROPOSAL] D25 2026-10-31 — PAT handling in the GUI: hidden entry -> memory -> child
+  process environment (RICE_TOKEN) only; wiped on close; on-screen redaction of the token
+  value in every displayed log line; no disk logs; never argv/URL/title/config/clipboard.
+  Mirrors S1/S2 with GUI-specific enforcement.
+- [PROPOSAL] D26 2026-10-31 — Interactive prompts: the GUI passes --yes (it asked the
+  confirmation itself) and relays the ONE surviving prompt — the public-repo typed
+  confirmation — via a modal writing to child stdin. Unrecognized prompts get a generic
+  relay dialog so a stdin-blocked child is always recoverable. Cancel is pre-push only
+  (SIGTERM); stale 0700 staging dirs are detected and offered for cleanup at startup.
+  The clean fix (backend trapping INT/TERM) is deferred until after the user's backend
+  testing, listed in GUI-PLAN.md §5.4.
+- [PROPOSAL] D27 2026-10-31 — gui.conf (~/.config/rice-backup/gui.conf, configparser,
+  0600) stores ONLY repo owner/name, window geometry and UI preferences — nothing
+  credential-shaped; explicitly safe for the backup itself to collect (L2 scans it anyway).
