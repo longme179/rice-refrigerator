@@ -1,0 +1,9 @@
+#!/bin/sh
+# mock flatpak for the test suite
+case "$*" in
+  *"list --app"*)
+    printf 'org.example.App\tflathub\n'
+    printf 'org.gnome.Calculator\tflathub\n' ;;
+  *) exit 1 ;;
+esac
+exit 0

@@ -1,0 +1,7 @@
+#!/bin/sh
+# mock apt-mark for the test suite
+case "$*" in
+  "showmanual") printf '%s\n' kitty vim zzz-unknown-ubuntu-pkg ;;
+  *) exit 1 ;;
+esac
+exit 0

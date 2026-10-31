@@ -1,0 +1,10 @@
+#!/bin/sh
+# mock npm for the test suite (octal escapes: dash printf lacks \xNN)
+case "$*" in
+  *"ls -g --depth=0"*)
+    printf '/usr/lib/node_modules\n'
+    printf '\342\224\234\342\224\200\342\224\200 typescript@5.6.2\n'
+    printf '\342\224\224\342\224\200\342\224\200 yaml@2.5.1\n' ;;
+  *) exit 1 ;;
+esac
+exit 0

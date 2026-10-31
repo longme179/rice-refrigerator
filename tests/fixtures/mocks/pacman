@@ -1,0 +1,8 @@
+#!/bin/sh
+# mock pacman for the test suite
+case "$*" in
+  "-Qqe") printf '%s\n' kitty vim hyprland zzz-aur-fakepkg ;;
+  "-Qqm") printf '%s\n' zzz-aur-fakepkg ;;
+  *) exit 1 ;;
+esac
+exit 0

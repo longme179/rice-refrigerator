@@ -40,3 +40,42 @@ Format: [DECISION] / [ASSUMPTION] with ID, date, reason.
   https://api.github.com; tests override only through RICE_TEST_GIT_BASE (file:// bare repos) and
   PATH-mocked gh/curl. The tool refuses to push to any non-github URL unless the test override env
   is present.
+
+## Session 2 additions (testing + hardening)
+
+- [DECISION] D9 2026-10-31 — Test canaries are FAKE values generated PROGRAMMATICALLY at RUNTIME
+  by tests/fixtures/build.sh (exact regex shapes, e.g. 45 B's after github_pat_) into the
+  git-ignored tests/fixtures/home/ and tests/canaries.txt; only the clean fixture
+  (tests/fixtures/home-clean/) and the generator are committed. Two reasons: (a) a hand-typed
+  canary one character short of a regex minimum (39 vs 40) passed BOTH scan layers and reached a
+  test backup repo — caught only by the exact-value grep (AC-03); (b) GitHub PUSH PROTECTION
+  rejected the milestone push while canaries were committed ("Push cannot contain secrets",
+  Stripe-pattern locations in tests/canaries.txt and the stripe fixture) — even fake
+  token-shaped data cannot live in git. The generator's own source avoids pattern shapes
+  (rep()-construction, split PEM header strings, split URL-credentials literals).
+- [DECISION] D10 2026-10-31 — The 60 MiB size-cap fixture is created at RUNTIME as a sparse file
+  by the test suite (not committed) so the repository clone stays lightweight.
+- [DECISION] D11 2026-10-31 — rice-restore re-applies exact file modes from manifest.tsv after
+  copying, because git carries only the executable bit. The manifest is parsed with
+  `awk -F'\t'`: an `IFS=$'\t' read` collapses the consecutive tabs of the empty target column
+  and silently shifts every following field (that bug disabled mode restoration entirely).
+- [DECISION] D12 2026-10-31 — The pre-push hook scans EVERY commit in the pushed range, not just
+  the tip. T11 proved tip-only scanning lets a secret pass when the file is deleted in a
+  follow-up commit. The README SECURITY runbook (orphan-branch rebuild) is exercised by T11.
+- [DECISION] D13 2026-10-31 — /etc allowlist files (collected only with --include-system) are
+  content-scanned at collection time with the same L2 rules as $HOME candidates, so a hit is
+  excluded BEFORE staging instead of aborting the push later.
+- [DECISION] D14 2026-10-31 — rice_collect_home runs a transparency probe over top-level
+  entries plus a small deep-probe list: deny-listed or cache items OUTSIDE the include roots
+  (e.g. ~/.ssh, ~/.mozilla, ~/.cache) are reported in EXCLUDED.md/SKIPPED.md with their rule.
+  They were always excluded; now the user can SEE that they were.
+- [DECISION] D15 2026-10-31 — The backup dry-run lists the first 40 upload paths (names only),
+  and the restore dry-run previews the generated package script into its temp workdir, so both
+  dry-runs stay pure no-ops while still showing what would happen.
+- [ASSUMPTION] A5 2026-10-31 — bash >= 4.4 and git >= 2.28 are acceptable minimums (associative
+  arrays, ${var,,}, mapfile -d '', git init -b). All three target distros' current releases
+  ship newer versions; documented in README.
+- [DECISION] D16 2026-10-31 — rice_info/rice_warn/rice_err concatenate arguments (no printf
+  formatting); call sites that need formatting use printf directly. Reason: several call sites
+  pass exit codes or user-controlled paths as extra args, which printf formatting would
+  misinterpret, and a % character inside an interpolated path would break a format string.

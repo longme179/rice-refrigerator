@@ -1,0 +1,12 @@
+#!/bin/sh
+# mock dnf for the test suite (canned output, never a real package db)
+case "$*" in
+  *"repoquery --userinstalled"*)
+    printf '%s\n' kitty vim-enhanced google-chrome-stable zzz-unknown-fakepkg hyprland ;;
+  *"repolist --enabled"*)
+    printf '%s\n' 'repo id  repo name' 'fedora   Fedora 41 - x86_64' 'updates  Fedora 41 - updates' ;;
+  *"copr list"*)
+    printf '%s\n' '  copr:copr.fedorainfracloud.org:owner:project' ;;
+  *) exit 1 ;;
+esac
+exit 0

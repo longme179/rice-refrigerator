@@ -1,0 +1,5 @@
+[user]
+        name = Rice Tester
+        email = rice@example.com
+[init]
+        defaultBranch = main

@@ -1,0 +1,21 @@
+#!/bin/sh
+# mock gh CLI for the test suite (answers auth status / api GET / repo create)
+# every call is recorded to $MOCK_STATE/gh.log for assertions
+if [ -n "${MOCK_STATE:-}" ] && [ -d "$MOCK_STATE" ]; then
+  printf 'gh %s\n' "$*" >> "$MOCK_STATE/gh.log"
+fi
+case "$1" in
+  auth)
+    [ "$2" = "status" ] && exit 0
+    exit 1 ;;
+  api)
+    case "$2" in
+      */repos/test/backup)  printf '{"private":false,"full_name":"test/backup"}\n' ;;
+      *)                    printf '{"message":"Not Found"}\n' ;;
+    esac
+    exit 0 ;;
+  repo)
+    # gh repo create OWNER/NAME --private  -> recorded in gh.log, exit 0
+    exit 0 ;;
+  *) exit 1 ;;
+esac

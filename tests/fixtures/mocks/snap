@@ -1,0 +1,10 @@
+#!/bin/sh
+# mock snap for the test suite
+case "$*" in
+  "list")
+    printf 'Name     Version  Rev   Tracking  Publisher  Notes\n'
+    printf 'core22   0        1380  stable    canonical  base\n'
+    printf 'firefox  1.0      4090  stable    mozilla    -\n' ;;
+  *) exit 1 ;;
+esac
+exit 0

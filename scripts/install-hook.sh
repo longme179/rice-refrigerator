@@ -34,14 +34,24 @@ cat > "$HOOKDIR/pre-push" <<'EOF'
 #!/bin/sh
 # rice-backup pre-push secret gate (security rule S4).
 # Installed by scripts/install-hook.sh - do not edit by hand; reinstall instead.
+# Scans EVERY commit in the range being pushed (not only the tip): a secret
+# that was committed and then deleted still blocks the push until the local
+# history is rebuilt (runbook: README SECURITY).
 scandir=$(dirname -- "$0")
 EXP=""
 if [ -f "$scandir/rice-scan-expect.txt" ]; then EXP="--expect $scandir/rice-scan-expect.txt"; fi
 status=0
 while read -r local_ref local_sha remote_ref remote_sha; do
     [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
-    # shellcheck disable=SC2086  (EXP is intentionally word-split; no spaces in path)
-    "$scandir/rice-secret-scan.sh" $EXP git "$local_sha" || status=1
+    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+        range="$local_sha"    # new branch: scan every reachable commit
+    else
+        range="$remote_sha..$local_sha"
+    fi
+    for rev in $(git rev-list "$range" 2>/dev/null); do
+        # shellcheck disable=SC2086  (EXP is intentionally word-split; no spaces in path)
+        "$scandir/rice-secret-scan.sh" $EXP git "$rev" || status=1
+    done
 done
 exit $status
 EOF

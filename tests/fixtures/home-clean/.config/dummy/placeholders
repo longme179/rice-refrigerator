@@ -1,0 +1,4 @@
+# placeholder values only - must NOT be flagged by the scanner
+password=changeme
+token = $MY_TOKEN
+secret: placeholder

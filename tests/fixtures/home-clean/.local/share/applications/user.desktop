@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=My App
+Exec=/home/user/.local/bin/myscript

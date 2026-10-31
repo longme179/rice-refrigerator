@@ -1,0 +1,8 @@
+#!/bin/sh
+# mock pip3 for the test suite
+case "$*" in
+  *"list --user --format=freeze"*)
+    printf 'requests==2.31.0\nrich==13.7.1\n' ;;
+  *) exit 1 ;;
+esac
+exit 0

@@ -1,0 +1,30 @@
+#!/bin/sh
+# mock curl for the test suite: rice-backup calls `curl --config FILE`, so the
+# mock parses the url/request lines out of the config file and answers them.
+# calls are recorded to $MOCK_STATE/curl.log; MOCK_CURL_FAIL=1 makes the
+# repo-creation POST fail (for the no-permission failure path).
+CFG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --config) CFG=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$CFG" ] && [ -f "$CFG" ] || { printf 'mock-curl: no config file\n' >&2; exit 1; }
+url=$(grep -o 'url = "[^"]*"' "$CFG" | head -1 | cut -d'"' -f2)
+method=$(grep -o 'request = "[^"]*"' "$CFG" | head -1 | cut -d'"' -f2)
+if [ -n "${MOCK_STATE:-}" ] && [ -d "$MOCK_STATE" ]; then
+  printf 'curl %s %s\n' "${method:-GET}" "$url" >> "$MOCK_STATE/curl.log"
+fi
+case "$url" in
+  */repos/test/backup)
+    printf '{"private":false,"full_name":"test/backup"}\n'; exit 0 ;;
+  */user/repos)
+    if [ "${MOCK_CURL_FAIL:-0}" = "1" ]; then
+      printf '{"message":"Resource not accessible by personal access tokens"}\n'
+      exit 0
+    fi
+    printf '{"private":true,"full_name":"test/newrepo"}\n'; exit 0 ;;
+  *)
+    printf '{"message":"Not Found"}\n'; exit 0 ;;
+esac

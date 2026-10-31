@@ -1,3 +1,7 @@
 *.log
 .DS_Store
 __pycache__/
+# runtime-generated FAKE canary data (GitHub push protection rejects
+# token-shaped content even when it is fake; the repo ships a generator)
+tests/canaries.txt
+tests/fixtures/home/
