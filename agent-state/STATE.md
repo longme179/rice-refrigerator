@@ -196,3 +196,19 @@ over recollection. Never write secrets here.
 - [s5] COMMITS re-created: 63c8af7 (=4cc4c1b), 33628ad (=a1a0fc8), dea5b6e (=6de3588),
   each carrying a re-creation note in its message.
 - (push + deliverables logged below as they complete)
+- [s5] RAN auth setup per S2/S3: /tmp/rice-auth (0700) with .pat (0600, 93 bytes,
+  prefix github_pat_, never echoed), askpass.sh (0700, env-only), env.sh; validated
+  `git ls-remote origin` exit 0.
+- [s5] RAN pre-push audit with exact-needle ON (RICE_TOKEN in env): tree unexpected=0;
+  history = only the two documented benign Phase-0 phrases; hook-equivalent per-commit
+  scan over 5b713d7..HEAD status=0.
+- [s5] RAN `git push origin main` → **5b713d7..ec555dc main -> main** (pre-push hook
+  passed with exact=on; askpass auth). Remote verified at ec555dc; branch in sync.
+- [s5] RAN post-push exact-needle scans: tree clean; history unchanged (2 documented
+  benign phrases; 0 exact-needle hits with the real PAT over tree AND history).
+- [s5] RAN deliverables: download/rice-backup-0.1.1.tar.gz rebuilt from HEAD
+  (git archive, 143 files — now includes GUI-PLAN.md + journals 04/05),
+  download/rice-backup-GUI-plan-EN.md added (replaces the VI copy per D30),
+  download/README.md restored + extended. 0.1.0 tarball kept with its warning.
+- [s5] FINAL: session-5 records + journal 05 committed and pushed (this commit).
+  Remote is the durable copy of everything; future sessions start from origin/main.
