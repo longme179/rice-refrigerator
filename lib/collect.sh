@@ -177,6 +177,7 @@ rice_collect_init() {
   RICE_META_INC=()       # "rel<TAB>bytes<TAB>mode<TAB>type<TAB>target"
   RICE_DENIED=()         # "rel<TAB>rule"
   RICE_SCANHITS=()       # "rel<TAB>rule"
+  RICE_USER_EXCL=()      # "rel<TAB>user-exclude" (from --exclude-from, D32)
   RICE_SKIPPED_BIG=()    # "rel<TAB>bytes"
   RICE_SKIPPED_CACHE=()  # rel paths (or dir summaries)
   RICE_TOTAL_BYTES=0
@@ -388,6 +389,79 @@ rice_scan_etc_candidates() { # $1 scanner
   RICE_ETC_INCLUDE=("${keep[@]}")
 }
 
+# User selection (--exclude-from FILE, D32): purely SUBTRACTIVE. Applied AFTER
+# the deny list (L1) and the content scan (L2), so a selection can never bypass
+# either layer and never adds anything. Entries are home-relative paths; an
+# entry names a file exactly or a directory subtree (prefix match on "dir/").
+# Matching walks the ANCESTORS of each candidate (<= depth lookups per file into
+# an associative array) so 3000+ candidates stay fast with any selection size.
+rice_apply_user_excludes() { # $1 home  $2 selection file ("" = none)
+  local home=$1 selfile=$2
+  [ -n "$selfile" ] || return 0
+  if [ ! -f "$selfile" ]; then
+    rice_warn "selection file not found: $selfile (continuing without it)"
+    return 0
+  fi
+  local -A pat=()
+  local e
+  while IFS= read -r e || [ -n "$e" ]; do
+    e=${e%%#*}                                   # strip comments
+    e=${e#"${e%%[![:space:]]*}"}                 # trim leading whitespace
+    e=${e%"${e##*[![:space:]]}"}                 # trim trailing whitespace
+    [ -n "$e" ] || continue
+    case "$e" in
+      /*|*..*)
+        rice_warn "selection entry ignored (must be a path relative to the home): $e"
+        continue
+        ;;
+    esac
+    pat["$e"]=0
+  done <"$selfile"
+  [ ${#pat[@]} -gt 0 ] || return 0
+
+  local keep=() rel hit anc rest m r2 b
+  for rel in "${RICE_INCLUDE[@]}"; do
+    hit=""
+    rest=$rel
+    while [ -n "$rest" ]; do            # rel, then each ancestor dir
+      if [ -n "${pat[$rest]:-}" ]; then hit=$rest; break; fi
+      case "$rest" in
+        */*) rest=${rest%/*} ;;
+        *)   rest="" ;;
+      esac
+    done
+    if [ -n "$hit" ]; then
+      pat["$hit"]=1
+      RICE_USER_EXCL+=("$rel"$'\t'user-exclude)
+    else
+      keep+=("$rel")
+    fi
+  done
+  RICE_INCLUDE=("${keep[@]}")
+
+  local metakeep=()
+  local -A excl=()
+  for m in "${RICE_USER_EXCL[@]}"; do excl["${m%%$'\t'*}"]=1; done
+  for m in "${RICE_META_INC[@]}"; do
+    r2=${m%%$'\t'*}
+    if [ -n "${excl[$r2]:-}" ]; then
+      # bytes = field 2, pure parameter expansion (no fork per entry: 3000+
+      # excluded files must stay fast, same pattern as section_bytes)
+      b=${m#*$'\t'}; b=${b%%$'\t'*}
+      RICE_TOTAL_BYTES=$((RICE_TOTAL_BYTES - ${b:-0}))
+    else
+      metakeep+=("$m")
+    fi
+  done
+  RICE_META_INC=("${metakeep[@]}")
+
+  for e in "${!pat[@]}"; do
+    [ "${pat[$e]}" -eq 1 ] \
+      || rice_warn "selection entry matched no candidate: $e"
+  done
+  rice_info "user selection applied: ${#RICE_USER_EXCL[@]} file(s) excluded"
+}
+
 # copy the include list into the staging tree with one tar pipe (R5:
 # read-only on originals, permissions and symlinks preserved)
 rice_stage_copy() { # $1 home  $2 stage
@@ -432,6 +506,9 @@ rice_write_reports() { # $1 stage
     printf '\n## Content scan hits (L2) - rule names only, values never stored\n'
     if [ ${#RICE_SCANHITS[@]} -eq 0 ]; then printf '(none)\n'; fi
     for i in "${RICE_SCANHITS[@]}"; do printf -- '- %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
+    printf '\n## User excluded (--exclude-from selection)\n'
+    if [ ${#RICE_USER_EXCL[@]} -eq 0 ]; then printf '(none)\n'; fi
+    for i in "${RICE_USER_EXCL[@]}"; do printf -- '- %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
   } > "$stage/reports/EXCLUDED.md"
   {
     printf '# Skipped items\n\n'

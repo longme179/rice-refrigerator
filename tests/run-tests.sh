@@ -609,9 +609,96 @@ t21() { # AC-21 session 3: PAT auth mode recorded + hard size budget with --allo
   unset RICE_TOTAL_MAX_BYTES
 }
 
+t22() { # D32 --exclude-from: subtractive selection, subtrees, comments, budget
+  TW=$SUITE/t22; mkdir -p "$TW/home"; make_home "$TW/home"; make_remote test/backup
+  setup_env fedora
+  # selection: comment + subtree + single file + unmatched entry
+  printf '# my session selection\n\n.config/vim\n.bashrc\nzzz-not-a-candidate\n' > "$TW/sel.txt"
+  out=$(backup --home "$TW/home" --repo test/backup --dry-run --exclude-from "$TW/sel.txt"); rc=$?
+  assert_rc "t22 dry-run rc with selection" "$rc" 0
+  assert_no_match "t22 subtree file removed from upload list" "$out" "    .config/vim/vimrc"
+  assert_no_match "t22 selected file removed from upload list" "$out" "    .bashrc"
+  assert_match "t22 user excluded counted in summary" "$out" "user excluded   : 2 item(s)"
+  assert_match "t22 unmatched entry warned" "$out" "selection entry matched no candidate: zzz-not-a-candidate"
+  assert_match "t22 selection applied info" "$out" "user selection applied: 2 file(s) excluded"
+  # absolute paths are rejected (warned), the run continues without them
+  printf '/etc/passwd\n' > "$TW/sel-abs.txt"
+  out=$(backup --home "$TW/home" --repo test/backup --dry-run --exclude-from "$TW/sel-abs.txt"); rc=$?
+  assert_rc "t22 absolute entry still runs" "$rc" 0
+  assert_match "t22 absolute entry warned" "$out" "must be a path relative to the home"
+  # the selection is purely SUBTRACTIVE: listing a hard-denied path neither
+  # rescues it nor changes the deny list
+  printf '.bash_history\n' > "$TW/sel-deny.txt"
+  out=$(backup --home "$TW/home" --repo test/backup --dry-run --exclude-from "$TW/sel-deny.txt"); rc=$?
+  assert_rc "t22 deny-listed entry in selection still runs" "$rc" 0
+  assert_match "t22 deny list still applies" "$out" "hard deny list : "
+  assert_no_match "t22 deny-listed file not in upload list" "$out" "    .bash_history"
+  # real run: excluded files never reach the pushed repo; EXCLUDED.md reports them
+  backup --home "$TW/home" --repo test/backup --yes --exclude-from "$TW/sel.txt" >/dev/null 2>&1
+  git clone -q "$TW/remote-base/test/backup.git" "$TW/clone"
+  assert_nofile "t22 excluded subtree not pushed" "$TW/clone/home/.config/vim/vimrc"
+  assert_nofile "t22 excluded file not pushed" "$TW/clone/home/.bashrc"
+  assert_file "t22 non-selected file pushed" "$TW/clone/home/.profile"
+  assert_file_match "t22 EXCLUDED.md has user section" "$TW/clone/reports/EXCLUDED.md" "User excluded"
+  assert_file_match "t22 EXCLUDED.md lists selected path" "$TW/clone/reports/EXCLUDED.md" ".config/vim/vimrc"
+  # --list-files reflects the selection (GUI contract): post-exclusion rows
+  out=$(backup --home "$TW/home" --list-files --exclude-from "$TW/sel.txt")
+  assert_no_match "t22 list-files omits selected subtree" "$out" ".config/vim/vimrc"
+  assert_no_match "t22 list-files omits selected file" "$out" $'\.bashrc\t'
+  assert_match "t22 list-files includes kept file" "$out" ".profile"
+  # budget interplay: excluding bulk data can bring a run back under budget
+  mkdir -p "$TW/hb/home/.config/bulk"; make_home "$TW/hb/home"
+  truncate -s 31457280 "$TW/hb/home/.config/bulk/big.bin"   # 30 MiB (< 50 MiB cap)
+  printf '.config/bulk/big.bin\n' > "$TW/sel-budget.txt"
+  export RICE_TOTAL_MAX_BYTES=$((20*1024*1024))
+  out=$(backup --home "$TW/hb/home" --repo test/backup --yes); rc=$?
+  assert_rc "t22 over budget without selection (exit 5)" "$rc" 5
+  out=$(backup --home "$TW/hb/home" --repo test/backup --yes --exclude-from "$TW/sel-budget.txt"); rc=$?
+  assert_rc "t22 under budget after excluding bulk" "$rc" 0
+  unset RICE_TOTAL_MAX_BYTES
+}
+
+t23() { # D33 --export: offline archive, no auth/repo, restorable, nothing pushed
+  TW=$SUITE/t23; mkdir -p "$TW/home"; make_home "$TW/home"
+  # PAT removed and no gh on PATH (mocks-min): export must need NO auth at all
+  export RICE_TEST_DISTRO=fedora
+  export RICE_TEST_GIT_BASE="file://$TW/remote-base"
+  export RICE_TOKEN=""
+  export RICE_SCAN_EXACT="RICECANARYEXACTSECRETVALUE42"
+  export PATH="$MOCKS_MIN:$ORIG_PATH"
+  out=$(backup --home "$TW/home" --export "$TW/arch.tar.gz" --dry-run); rc=$?
+  assert_rc "t23 export dry-run rc" "$rc" 0
+  assert_match "t23 export target line" "$out" "target     : offline archive"
+  assert_match "t23 export needs no auth" "$out" "auth       : none (offline export)"
+  assert_nofile "t23 dry-run wrote no archive" "$TW/arch.tar.gz"
+  out=$(backup --home "$TW/home" --export "$TW/arch.tar.gz" --yes); rc=$?
+  assert_rc "t23 export rc" "$rc" 0
+  assert_match "t23 export success line" "$out" "archive exported: commit"
+  assert_file "t23 archive exists" "$TW/arch.tar.gz"
+  assert_nofile "t23 no remote repo dir created" "$TW/remote-base"
+  # the archive carries the scan gate: no canary anywhere in it
+  mkdir -p "$TW/x"; tar -xzf "$TW/arch.tar.gz" -C "$TW/x"
+  canaries_absent "t23 extracted archive"
+  assert_file "t23 archive contains RESTORE.md" "$TW/x/RESTORE.md"
+  assert_file_match "t23 RESTORE.md offline variant" "$TW/x/RESTORE.md" "offline archive"
+  assert_file "t23 archive contains manifest" "$TW/x/manifest.tsv"
+  # the extracted directory is a real git repository
+  git -C "$TW/x" rev-parse --verify HEAD >/dev/null 2>&1 \
+    && ok "t23 extracted dir is a git repo" || bad "t23 extracted dir is a git repo"
+  assert_eq "t23 extracted repo has one commit" "$(revcount "$TW/x")" "1"
+  # and the EXISTING restore tool restores from it via file://
+  mkdir -p "$TW/rh"
+  out=$(restore --from "file://$TW/x" --home "$TW/rh"); rc=$?
+  assert_rc "t23 restore dry-run from extracted archive" "$rc" 0
+  assert_match "t23 restore plan mentions sections" "$out" "sections"
+  # relative --export paths resolve against the caller's cwd, not the stage
+  ( cd "$TW" && backup --home "$TW/home" --export "rel.tar.gz" --yes ) >/dev/null 2>&1
+  assert_file "t23 relative export path honored" "$TW/rel.tar.gz"
+}
+
 # --------------------------------------------------------------------- runner
 printf 'rice-backup acceptance suite\n  root: %s\n  work: %s\n\n' "$ROOT" "$SUITE"
-TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21"
+TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23"
 for t in $TESTS; do
   printf '%s\n' "-- $t"
   ( "$t" ) || true

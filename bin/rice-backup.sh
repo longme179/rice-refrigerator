@@ -5,6 +5,7 @@
 # Usage:
 #   rice-backup.sh [--dry-run] [--yes] [--include-system] [--repo OWNER/NAME]
 #                  [--home DIR] [--keep-stage] [--allow-oversize]
+#                  [--exclude-from FILE] [--export FILE.tar.gz] [--list-files]
 #   rice-backup.sh restore [rice-restore options...]   (passes through)
 #   rice-backup.sh --help
 #
@@ -44,6 +45,9 @@ ASSUME_YES=0
 INCLUDE_SYSTEM=0
 KEEP_STAGE=0
 ALLOW_OVERSIZE=0
+EXCLUDE_FROM=""
+EXPORT_PATH=""
+LIST_FILES=0
 RICE_HOME="${HOME}"
 REPO_ARG="${RICE_REPO:-}"
 
@@ -60,6 +64,18 @@ usage: rice-backup.sh [options]
   --keep-stage        keep the temporary staging dir for debugging
   --allow-oversize    permit a run whose total exceeds the 1 GiB budget
                       (RICE_TOTAL_MAX_BYTES overrides the budget value)
+  --exclude-from FILE skip the paths listed in FILE (home-relative; a directory
+                      entry skips its whole subtree; # comments allowed).
+                      Purely subtractive: it can never override the deny list
+                      or the content scan, only remove candidates.
+  --export FILE.tar.gz  write an offline archive instead of pushing: no GitHub,
+                      no PAT needed. The extracted directory is a git repo -
+                      restore with rice-restore.sh --from file://<extracted-dir>
+                      (export replaces the push; run twice for both)
+  --list-files        print the post-exclusion candidate list (one
+                      "path<TAB>bytes" line per file) and exit: offline,
+                      read-only, no auth. Machine-readable view the GUI builds
+                      its tick/skip checklist from
   restore ...         run the matching restore tool
   -h, --help          this help
 
@@ -81,6 +97,9 @@ while [ $# -gt 0 ]; do
     --home) [ $# -ge 2 ] || usage 2; RICE_HOME=$2; shift 2 ;;
     --keep-stage) KEEP_STAGE=1; shift ;;
     --allow-oversize) ALLOW_OVERSIZE=1; shift ;;
+    --exclude-from) [ $# -ge 2 ] || usage 2; EXCLUDE_FROM=$2; shift 2 ;;
+    --export) [ $# -ge 2 ] || usage 2; EXPORT_PATH=$2; shift 2 ;;
+    --list-files) LIST_FILES=1; shift ;;
     -h|--help) usage 0 ;;
     --) shift; break ;;
     *) printf 'unknown option: %s\n' "$1" >&2; usage 2 ;;
@@ -89,6 +108,14 @@ done
 
 rice_require_core
 [ -d "$RICE_HOME" ] || rice_die "home directory not found: $RICE_HOME"
+
+# offline modes need no GitHub access: --export (D33) and --list-files (D32 GUI)
+if [ -n "$EXPORT_PATH" ] || [ "$LIST_FILES" -eq 1 ]; then
+  OFFLINE_MODE=1
+else
+  OFFLINE_MODE=0
+fi
+
 RICE_DISTRO=$(rice_detect_distro)
 RICE_DE=$(rice_detect_de)
 SCANNER="$RICE_ROOT/scripts/secret-scan.sh"
@@ -107,37 +134,44 @@ cleanup() {
 trap cleanup EXIT
 
 # ------------------------------------------------------------------- auth
+# Offline modes (D33/D32): no GitHub access, so no auth and no repo needed.
 INTERACTIVE=0
 rice_is_tty && INTERACTIVE=1
-rice_auth_init "$INTERACTIVE" || rice_die "authentication failed (rule R3)" 4
-rice_auth_setup_git || rice_die "could not prepare git authentication" 4
-rice_info "auth mode: $RICE_AUTH_MODE (token never stored, never in any URL)"
+if [ "$OFFLINE_MODE" -eq 0 ]; then
+  rice_auth_init "$INTERACTIVE" || rice_die "authentication failed (rule R3)" 4
+  rice_auth_setup_git || rice_die "could not prepare git authentication" 4
+  rice_info "auth mode: $RICE_AUTH_MODE (token never stored, never in any URL)"
+fi
 
 # ------------------------------------------------------------ target repo
-if [ -z "$REPO_ARG" ]; then
-  if [ "$INTERACTIVE" -eq 1 ]; then
-    printf 'Target GitHub repo (OWNER/NAME): ' >&2
-    IFS= read -r REPO_ARG || REPO_ARG=""
-  else
-    rice_die "no --repo given and stdin is not a terminal (set RICE_REPO or pass --repo)" 1
+REPO_OWNER=""
+REPO_NAME=""
+if [ "$OFFLINE_MODE" -eq 0 ]; then
+  if [ -z "$REPO_ARG" ]; then
+    if [ "$INTERACTIVE" -eq 1 ]; then
+      printf 'Target GitHub repo (OWNER/NAME): ' >&2
+      IFS= read -r REPO_ARG || REPO_ARG=""
+    else
+      rice_die "no --repo given and stdin is not a terminal (set RICE_REPO or pass --repo)" 1
+    fi
   fi
-fi
-REPO_PARSED=$(rice_parse_repo "${REPO_ARG:-}") || rice_die "invalid repository name: ${REPO_ARG:-} (expected OWNER/NAME)"
-read -r REPO_OWNER REPO_NAME <<<"$REPO_PARSED"
+  REPO_PARSED=$(rice_parse_repo "${REPO_ARG:-}") || rice_die "invalid repository name: ${REPO_ARG:-} (expected OWNER/NAME)"
+  read -r REPO_OWNER REPO_NAME <<<"$REPO_PARSED"
 
-rice_repo_ensure "$REPO_OWNER" "$REPO_NAME" || rice_die "could not ensure a private target repo (see messages above)" 1
+  rice_repo_ensure "$REPO_OWNER" "$REPO_NAME" || rice_die "could not ensure a private target repo (see messages above)" 1
 
-if [ "$RICE_REPO_PRIVATE" = "no" ]; then
-  rice_warn "repository $REPO_OWNER/$REPO_NAME exists and is PUBLIC."
-  rice_warn "Everything backed up (file names, config contents) would be world-readable."
-  rice_warn "This confirmation cannot be bypassed with --yes."
-  rice_confirm_typed "To push anyway, confirm the repository" "$REPO_OWNER/$REPO_NAME" \
-    || rice_die "aborted: public repository not confirmed" 1
-elif [ "$RICE_REPO_PRIVATE" = "unknown" ]; then
-  rice_warn "could not determine whether $REPO_OWNER/$REPO_NAME is private."
-  if [ "$DRYRUN" -eq 0 ]; then
+  if [ "$RICE_REPO_PRIVATE" = "no" ]; then
+    rice_warn "repository $REPO_OWNER/$REPO_NAME exists and is PUBLIC."
+    rice_warn "Everything backed up (file names, config contents) would be world-readable."
+    rice_warn "This confirmation cannot be bypassed with --yes."
     rice_confirm_typed "To push anyway, confirm the repository" "$REPO_OWNER/$REPO_NAME" \
-      || rice_die "aborted: repository privacy could not be verified" 1
+      || rice_die "aborted: public repository not confirmed" 1
+  elif [ "$RICE_REPO_PRIVATE" = "unknown" ]; then
+    rice_warn "could not determine whether $REPO_OWNER/$REPO_NAME is private."
+    if [ "$DRYRUN" -eq 0 ]; then
+      rice_confirm_typed "To push anyway, confirm the repository" "$REPO_OWNER/$REPO_NAME" \
+        || rice_die "aborted: repository privacy could not be verified" 1
+    fi
   fi
 fi
 
@@ -153,6 +187,20 @@ if [ "$INCLUDE_SYSTEM" -eq 1 ]; then
 fi
 rice_info "content-scanning ${#RICE_INCLUDE[@]} candidate file(s) with the S4 rules..."
 rice_scan_candidates "$RICE_HOME" "$SCANNER"
+
+# ---- user selection (D32): purely SUBTRACTIVE, applied AFTER the deny list
+# and the content scan so ticking something off can never bypass either layer
+rice_apply_user_excludes "$RICE_HOME" "$EXCLUDE_FROM"
+
+# ---- machine-readable candidate list for the GUI (D32 companion): one
+# "rel<TAB>bytes" line per surviving candidate, offline and read-only. Info
+# lines from rice_info also land on stdout; consumers skip non-matching lines.
+if [ "$LIST_FILES" -eq 1 ]; then
+  if [ ${#RICE_META_INC[@]} -gt 0 ]; then
+    printf '%s\n' "${RICE_META_INC[@]}" | cut -f1,2
+  fi
+  exit 0
+fi
 
 # ----------------------------------------------------------- dry-run summary
 SUMMARY_SECTIONS=0
@@ -208,8 +256,13 @@ topfile_bytes() {
 printf '\n=== rice-backup dry-run summary ===\n'
 printf 'home       : %s\n' "$RICE_HOME"
 printf 'distro     : %s (%s desktop) host=%s\n' "$(rice_distro_version)" "$RICE_DE" "$(hostname 2>/dev/null || echo unknown)"
-printf 'target     : %s (private: %s) branch main\n' "$(rice_remote_url "$REPO_OWNER" "$REPO_NAME")" "${RICE_REPO_PRIVATE:-unknown}"
-printf 'auth       : %s\n' "$RICE_AUTH_MODE"
+if [ -n "$EXPORT_PATH" ]; then
+  printf 'target     : offline archive %s (no GitHub access)\n' "$EXPORT_PATH"
+  printf 'auth       : none (offline export)\n'
+else
+  printf 'target     : %s (private: %s) branch main\n' "$(rice_remote_url "$REPO_OWNER" "$REPO_NAME")" "${RICE_REPO_PRIVATE:-unknown}"
+  printf 'auth       : %s\n' "${RICE_AUTH_MODE:-unknown}"
+fi
 
 printf '\nwould upload (read-only pass done, nothing staged yet):\n'
 printf '  dotfiles              : %s file(s), %s\n' "$(topfile_count)" "$(rice_hr_size "$(topfile_bytes)")"
@@ -248,6 +301,8 @@ printf '  hard deny list : %s item(s)\n' "${#RICE_DENIED[@]}"
 for i in "${RICE_DENIED[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
 printf '  scan hits       : %s item(s)\n' "${#RICE_SCANHITS[@]}"
 for i in "${RICE_SCANHITS[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
+printf '  user excluded   : %s item(s)\n' "${#RICE_USER_EXCL[@]}"
+for i in "${RICE_USER_EXCL[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
 printf '  oversized (>50M): %s item(s)\n' "${#RICE_SKIPPED_BIG[@]}"
 for i in "${RICE_SKIPPED_BIG[@]}"; do printf '    - %s (%s)\n' "${i%%$'\t'*}" "$(rice_hr_size "${i#*$'\t'}")"; done
 printf '  caches/junk     : %s item(s)\n' "${#RICE_SKIPPED_CACHE[@]}"
@@ -272,8 +327,13 @@ if [ "$DRYRUN" -eq 1 ]; then
 fi
 
 if [ "$ASSUME_YES" -ne 1 ]; then
-  rice_confirm "Proceed with staging and pushing these ${#RICE_INCLUDE[@]} file(s)?" \
-    || rice_die "aborted by user" 1
+  if [ -n "$EXPORT_PATH" ]; then
+    rice_confirm "Proceed with staging and exporting these ${#RICE_INCLUDE[@]} file(s) to $EXPORT_PATH?" \
+      || rice_die "aborted by user" 1
+  else
+    rice_confirm "Proceed with staging and pushing these ${#RICE_INCLUDE[@]} file(s)?" \
+      || rice_die "aborted by user" 1
+  fi
 fi
 
 # ------------------------------------------------------------------ staging
@@ -338,7 +398,28 @@ fi
 mkdir -p "$RICE_STAGE/reports"
 rice_write_reports "$RICE_STAGE"
 rice_make_manifest "$RICE_STAGE"
-cat > "$RICE_STAGE/RESTORE.md" <<'EOF'
+if [ -n "$EXPORT_PATH" ]; then
+  cat > "$RICE_STAGE/RESTORE.md" <<'EOF'
+# Restoring this backup (offline archive)
+
+This backup was exported as a tar.gz archive instead of being pushed to
+GitHub. No GitHub account, repository or token is involved.
+
+1. Extract the archive anywhere - the result is itself a git repository:
+
+       tar -xzf <archive>.tar.gz
+
+2. Restore from the extracted repository with the matching restore tool from
+   your rice-backup checkout:
+
+    bin/rice-restore.sh --from file://<path-to-extracted-dir>
+
+Restore is dry-run by default and applies section by section; read README.md
+first. Package lists are never executed automatically: review the generated
+script before running anything with sudo.
+EOF
+else
+  cat > "$RICE_STAGE/RESTORE.md" <<'EOF'
 # Restoring this backup
 
 Run the matching restore tool from your rice-backup checkout:
@@ -349,14 +430,32 @@ Restore is dry-run by default and applies section by section; read README.md
 first. Package lists are never executed automatically: review the generated
 script before running anything with sudo.
 EOF
+fi
 
-# ------------------------------------------------------- commit, scan, push
-rice_info "committing, scanning (S4) and pushing..."
-COMMIT=$(rice_stage_finish "$RICE_STAGE" "$DIFF_BASE" "$SCANNER" "$RICE_ROOT")
+# ------------------------------------------------ commit, scan, push/export
+if [ -n "$EXPORT_PATH" ]; then
+  rice_info "committing, scanning (S4), writing the archive (no push)..."
+else
+  rice_info "committing, scanning (S4) and pushing..."
+fi
+COMMIT=$(rice_stage_finish "$RICE_STAGE" "$DIFF_BASE" "$SCANNER" "$RICE_ROOT" ${EXPORT_PATH:+export})
 FINISH_RC=$?
 COMMIT=$(printf '%s\n' "$COMMIT" | tail -n 1)
-[ "$FINISH_RC" -eq 0 ] || rice_die "backup did not complete (see messages above; exit codes: 2=secret hit, 3=push failure)" "$FINISH_RC"
+[ "$FINISH_RC" -eq 0 ] || rice_die "backup did not complete (see messages above; exit codes: 2=secret hit, 3=push or export failure)" "$FINISH_RC"
 
-printf '[rice-backup] backup pushed: commit %s -> %s\n' "$COMMIT" "$(rice_remote_url "$REPO_OWNER" "$REPO_NAME")"
+if [ -n "$EXPORT_PATH" ]; then
+  # resolve a relative --export path against the ORIGINAL cwd (this script
+  # never cd's at top level; every cd lives inside a subshell)
+  case "$EXPORT_PATH" in
+    /*) EXPORT_ABS=$EXPORT_PATH ;;
+    *)  EXPORT_ABS="$PWD/$EXPORT_PATH" ;;
+  esac
+  rice_info "writing archive $EXPORT_ABS (contains .git, offline restorable)..."
+  tar -czf "$EXPORT_ABS" -C "$RICE_STAGE" . || rice_die "archive write failed: $EXPORT_ABS" 3
+  printf '[rice-backup] archive exported: commit %s -> %s\n' "$COMMIT" "$EXPORT_ABS"
+  rice_info "restore offline: tar -xzf the archive, then bin/rice-restore.sh --from file://<extracted-dir>"
+else
+  printf '[rice-backup] backup pushed: commit %s -> %s\n' "$COMMIT" "$(rice_remote_url "$REPO_OWNER" "$REPO_NAME")"
+fi
 rice_info "done. Re-run any time: each run creates a new commit."
 exit 0

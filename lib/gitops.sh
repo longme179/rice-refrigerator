@@ -224,6 +224,19 @@ rice_repo_create() { # $1 owner $2 name
 rice_stage_prepare() { # $1 stage dir  $2 owner  $3 name → prints "base" or "" (diff base)
   local stage=$1 owner=$2 name=$3
   local url
+
+  # export mode (D33): offline archive - no remote, no fetch, no diff base
+  if [ -z "$owner" ] && [ -z "$name" ]; then
+    (
+      cd "$stage" || exit 1
+      git init -q -b main .
+      git config user.name  >/dev/null 2>&1 || git config user.name  "rice-backup"
+      git config user.email >/dev/null 2>&1 || git config user.email "rice-backup@localhost"
+      printf ''
+    )
+    return 0
+  fi
+
   url=$(rice_remote_url "$owner" "$name")
 
   # T2/S5: the remote URL must be a plain github URL (or the test base)
@@ -255,8 +268,9 @@ rice_stage_prepare() { # $1 stage dir  $2 owner  $3 name → prints "base" or ""
   )
 }
 
-rice_stage_finish() { # $1 stage  $2 diff-base ("" if none)  $3 scanner  $4 toolroot
+rice_stage_finish() { # $1 stage  $2 diff-base ("" if none)  $3 scanner  $4 toolroot  [$5 = export]
   local stage=$1 base=$2 scanner=$3 toolroot=$4
+  local export_mode=${5:-}
 
   ( cd "$stage" || exit 1
     git add -A
@@ -265,8 +279,10 @@ rice_stage_finish() { # $1 stage  $2 diff-base ("" if none)  $3 scanner  $4 tool
     git commit -q --allow-empty -m "$msg"
 
     # install the pre-push hook (S4: hook AND explicit call)
-    bash "$toolroot/scripts/install-hook.sh" "$PWD" >/dev/null 2>&1 \
-      || rice_warn "could not install pre-push hook (continuing with explicit scans)"
+    if [ -z "$export_mode" ]; then
+      bash "$toolroot/scripts/install-hook.sh" "$PWD" >/dev/null 2>&1 \
+        || rice_warn "could not install pre-push hook (continuing with explicit scans)"
+    fi
 
     # ---- explicit scans (S4): full tree + changed files + the commit itself
     local scans_failed=0 out
@@ -284,11 +300,17 @@ rice_stage_finish() { # $1 stage  $2 diff-base ("" if none)  $3 scanner  $4 tool
     printf '%s\n' "$out" | grep -v '^SCAN ' >&2 || true
 
     if [ "$scans_failed" -ne 0 ]; then
-      rice_err "SECRET HIT: refusing to push (rule S4). The local staging commit is discarded;"
+      rice_err "SECRET HIT: refusing to continue (rule S4). The local staging commit is discarded;"
       rice_err "the remote was never contacted with this content."
       rice_err "If any listed file already existed in the REMOTE backup, rotate the involved"
       rice_err "credentials now and follow the history-rewrite runbook in README SECURITY."
       exit 2
+    fi
+
+    # export mode: stop here - the archive is written by the caller (no push)
+    if [ -n "$export_mode" ]; then
+      printf '%s\n' "$(git rev-parse --short HEAD)"
+      exit 0
     fi
 
     # push (never --force; non-fast-forward aborts, never overwritten)

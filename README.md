@@ -90,7 +90,8 @@ it (e.g. into a password manager or an unreferenced include), and re-run.
 ```sh
 ./bin/rice-backup.sh [--dry-run] [--yes] [--include-system]
                      [--repo OWNER/NAME] [--home DIR] [--keep-stage]
-                     [--allow-oversize]
+                     [--allow-oversize] [--exclude-from FILE]
+                     [--export FILE.tar.gz] [--list-files]
 ```
 
 | option | effect |
@@ -102,6 +103,9 @@ it (e.g. into a password manager or an unreferenced include), and re-run.
 | `--home DIR` | back up a different home directory (default `$HOME`) |
 | `--keep-stage` | keep the temp staging dir for debugging |
 | `--allow-oversize` | allow a run whose total exceeds the 1 GiB budget (`RICE_TOTAL_MAX_BYTES` overrides the budget value; exit code 5 is the refusal) |
+| `--exclude-from FILE` | **selection** — skip the home-relative paths listed in `FILE` (one per line, `#` comments; a directory entry skips its whole subtree). See below. |
+| `--export FILE.tar.gz` | **offline archive** — write a restorable tar.gz instead of pushing. No GitHub, no PAT. See below. |
+| `--list-files` | print the post-exclusion candidate list (`path<TAB>bytes` per line) and exit — offline and read-only; what the GUI builds its checklist from |
 
 Authentication (in order of preference):
 
@@ -116,6 +120,60 @@ Target repo handling: if the repo does not exist it is created **private**; if
 it exists and is **public** you get a loud warning and must type the exact
 `OWNER/NAME` to proceed; if privacy cannot be determined you are asked to
 confirm before anything is pushed.
+
+### Selecting what gets backed up (`--exclude-from`)
+
+The selection file is a plain list of home-relative paths, one per line
+(`#` starts a comment); an entry naming a directory skips its entire subtree:
+
+```sh
+# skip re-downloadable bulk data
+.local/share/fonts
+.local/bin/uv
+.config/mango
+```
+
+The selection is **purely subtractive**: it is applied *after* the hard deny
+list and the content scan, so ticking a path off can only *remove* candidates,
+never override either safety layer. Excluded items appear as
+`user excluded` in the dry-run summary and in `reports/EXCLUDED.md`; the size
+budget is recomputed, so excluding bulk data can bring an over-budget run back
+under the 1 GiB budget. Entries that match no current candidate produce a
+warning (typo guard), absolute paths and `..` are rejected. The file is also
+the persistence format of the GUI's tick/skip checklist
+(`~/.config/rice-backup/selection.txt`).
+
+### Offline archives (`--export`)
+
+```sh
+./bin/rice-backup.sh --export rice-$(hostname).tar.gz --yes
+```
+
+`--export` replaces the push for that run: everything else — collection, deny
+list, content scan, manifest, reports, the 1 GiB budget — happens exactly as
+usual, but the staging repository (including `.git`) is written into a tar.gz
+instead of being pushed. **No GitHub access and no PAT are needed at all.**
+Restoring needs no network either:
+
+```sh
+tar -xzf rice-<host>.tar.gz
+./bin/rice-restore.sh --from file://$PWD/rice-<host>   # dry-run by default
+```
+
+The extracted directory is itself a git repository, so `rice-restore`'s normal
+flow (manifest verification, section-by-section apply, conflict backups)
+works unchanged. If you want both a GitHub backup *and* an archive, run the
+tool twice (once without `--export`, once with it) — each run creates its own
+commit.
+
+## Graphical interface (optional)
+
+A point-and-click frontend lives in `gui/` (Python + PyGObject/GTK4): setup →
+dry-run review with a **tick/skip checklist** (per file and per section, saved
+between runs in `~/.config/rice-backup/`) → push **or offline archive export**
+→ result. It is an optional layer: the CLI stays fully supported and portable,
+and the GUI starts with a self-check that prints the exact per-distro install
+command when PyGObject is missing. See `gui/README-GUI.md`.
 
 ## Restore
 
