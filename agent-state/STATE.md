@@ -288,13 +288,19 @@ over recollection. Never write secrets here.
 ## Session 8 — 2026-11-01 (symlink following, D37)
 
 ## NEXT ACTION (write-ahead) — session 8, current
-- REMAINING: S4 tree+history gate -> commit -> push -> rebuild
-  download/rice-backup-0.3.0.tar.gz -> update download/README.md -> final
-  Vietnamese report. (Implementation itself is DONE and green: 356/0.)
+- AWAITING THE USER'S PAT (S3): /tmp/rice-auth lost .pat/env.sh in the
+  sandbox recycle. When it lands: materialize to /tmp/rice-auth/.pat (0600)
+  per S2, exact-needle pre-push scan, push e2be006 + the records commit,
+  post-push exact-needle scan, verify origin/main == HEAD. Everything else
+  is DONE: D37 complete, suite 356/0 (in-tree AND from the tarball),
+  download/rice-backup-0.3.0.tar.gz + README updated, records written.
 
 ## Session-8 result log (append-only)
 - [s8] RAN bootstrap: origin/main == HEAD == 262b4b9, tree clean, /tmp/rice-auth
   present, suite 317/0 after fixture rebuild.
+- [s8] RAN tarball self-verification: extracted 0.3.0 tarball → suite
+  initially 353/3 (fixture mode quirk), fixed build.sh mode re-assertion,
+  amended to e2be006, rebuilt tarball → **356/0 from the tarball itself**.
 - [s8] DONE (D37 implemented, suite 356/0, contract rig ALL OK): collect.sh
   link deferral + phase-2 resolver (deny-target/cache/coverage/overlap/
   dedup/outside/dangling) + recursive follow walk; staging pre-clean for
