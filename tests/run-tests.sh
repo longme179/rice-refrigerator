@@ -696,9 +696,25 @@ t23() { # D33 --export: offline archive, no auth/repo, restorable, nothing pushe
   assert_file "t23 relative export path honored" "$TW/rel.tar.gz"
 }
 
+t24() { # D28+: GUI adapter/guiconf headless unit tests (no PyGObject needed)
+  if ! command -v python3 >/dev/null 2>&1; then
+    info "t24 skipped (no python3 on this machine)"
+    return 0
+  fi
+  out=$(python3 -m unittest discover -s "$ROOT/gui/tests" 2>&1); rc=$?
+  assert_rc "t24 adapter unittest rc" "$rc" 0
+  assert_match "t24 adapter tests OK" "$out" "OK"
+  assert_no_match "t24 no failures" "$out" "FAILED"
+  # widget code compiles clean even where PyGObject cannot be imported (C5)
+  out=$(python3 -m py_compile "$ROOT/gui/adapter.py" "$ROOT/gui/guiconf.py" \
+                              "$ROOT/gui/gui_app.py" "$ROOT/gui/rice-gui" 2>&1); rc=$?
+  assert_rc "t24 gui py_compile rc" "$rc" 0
+  rm -rf "$ROOT/gui/__pycache__" "$ROOT/gui/tests/__pycache__" 2>/dev/null || true
+}
+
 # --------------------------------------------------------------------- runner
 printf 'rice-backup acceptance suite\n  root: %s\n  work: %s\n\n' "$ROOT" "$SUITE"
-TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23"
+TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23 t24"
 for t in $TESTS; do
   printf '%s\n' "-- $t"
   ( "$t" ) || true

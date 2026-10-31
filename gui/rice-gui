@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Launcher for the rice-backup GUI (GUI-PLAN.md section 4).
+
+Startup self-check (constraint C1): if PyGObject/GTK4 are missing, print the
+exact per-distro install command and exit 1. The CLI tools are never affected
+by this - the GUI is a strictly optional layer.
+"""
+
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+DISTRO_HINTS = {
+    "fedora": "sudo dnf install python3-gobject gtk4 libadwaita",
+    "arch": "sudo pacman -S python-gobject gtk4 libadwaita",
+    "ubuntu": "sudo apt install python3-gobject gir1.2-gtk-4.0 gir1.2-libadwaita-1",
+}
+FALLBACK_HINT = (
+    "install the PyGObject bindings and GTK4 for your distribution\n"
+    "(Fedora:   sudo dnf install python3-gobject gtk4 libadwaita\n"
+    " Arch:    sudo pacman -S python-gobject gtk4 libadwaita\n"
+    " Ubuntu:  sudo apt install python3-gobject gir1.2-gtk-4.0 gir1.2-libadwaita-1)"
+)
+
+
+def distro_id() -> str:
+    try:
+        for line in Path("/etc/os-release").read_text().splitlines():
+            if line.startswith("ID="):
+                return line.split("=", 1)[1].strip().strip('"').lower()
+    except OSError:
+        pass
+    return ""
+
+
+def missing_dep_message(err: Exception) -> str:
+    did = distro_id()
+    hint = DISTRO_HINTS.get(did)
+    for family in ("fedora", "arch", "ubuntu"):
+        if did.startswith(family):
+            hint = DISTRO_HINTS[family]
+            break
+    if hint is None:
+        hint = FALLBACK_HINT
+    return (
+        "rice-backup GUI: PyGObject/GTK4 are not available (%s).\n"
+        "Install them and retry:\n\n    %s\n\n"
+        "The command-line tools keep working without the GUI:\n"
+        "    bin/rice-backup.sh --dry-run\n" % (err, hint)
+    )
+
+
+def main() -> int:
+    try:
+        import gi  # noqa: F401
+    except Exception as exc:  # ImportError or missing typelib bits
+        print(missing_dep_message(exc), file=sys.stderr)
+        return 1
+    try:
+        gi.require_version("Gtk", "4.0")
+    except Exception as exc:
+        print(missing_dep_message(exc), file=sys.stderr)
+        return 1
+
+    from gui_app import main as app_main  # deferred: needs a working Gtk
+    return app_main(sys.argv[1:], toolroot=HERE.parent)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
