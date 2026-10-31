@@ -234,3 +234,29 @@ over recollection. Never write secrets here.
   payload is dominated by re-downloadable fonts (Iosevka NerdFont × 14 MiB variants)
   and .local/bin/uv 36 MiB. User advised to trim before the first real run.
 - [s6] RAN S4 gate + commit + push of this record (see journal 06).
+
+## Session 7 — 2026-10-31 (GUI implementation: tick/skip + sessions + archive export)
+
+## NEXT ACTION (write-ahead) — session 7, current
+- Implement the GUI per GUI-PLAN.md with the user's three additions: tick/skip
+  selection (needs backend --exclude-from = D32 + --list-files companion),
+  session persistence (D34), offline archive export (D33). Backend first with
+  tests (suite must stay green), then gui/ (adapter headless-tested, widgets
+  py_compile + manual checklist), commit+push at each milestone (D31).
+
+## Session-7 result log (append-only)
+- [s7] RAN backend milestone A: --exclude-from / --export / --list-files
+  implemented (D32/D33 + companion); t22 + t23 added; suite 313/0; S4 tree
+  scan unexpected=0; COMMIT d6b2f05. Version 0.2.0. README gained the
+  selection + offline-archive + GUI sections.
+- [s7] RAN GUI milestone B: gui/{rice-gui, adapter.py, guiconf.py, gui_app.py,
+  README-GUI.md, tests/}; 45/45 headless unittests + py_compile via new t24;
+  suite 317/0; S4 clean after renaming cred-assign false-positive identifiers
+  (D35) instead of whitelisting; COMMIT 1e512ed. Widgets NOT RUN (C5) —
+  10-point manual checklist in gui/README-GUI.md.
+- [s7] ENVIRONMENT: /tmp/rice-auth is MISSING after the sandbox recycle → the
+  session-7 commits (d6b2f05, 1e512ed, + final docs commit) are LOCAL until a
+  PAT is re-requested from the user (rule S3: never search the filesystem for
+  tokens). Push happens as soon as the PAT lands in env.
+- [s7] PENDING: final docs/deliverable commit (this one) + push + 0.2.0
+  tarball into download/.

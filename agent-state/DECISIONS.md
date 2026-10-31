@@ -167,3 +167,43 @@ Format: [DECISION] / [ASSUMPTION] with ID, date, reason.
   4cc4c1b, found in the sandbox staging area) with the session-4 documents held verbatim
   in the agent context. Lesson made a standing rule: PUSH AT EVERY GREEN MILESTONE —
   local-only commits are one recycle away from loss.
+
+## Session 7 additions (user request: GUI with tick/skip, session saving, archive export)
+
+- [DECISION] D32 2026-10-31 — `--exclude-from FILE` selection: purely subtractive
+  (applied AFTER the hard deny list AND the content scan, so a selection can
+  never bypass either layer); home-relative paths, one per line, `#` comments,
+  a directory entry skips its whole subtree; unmatched entries warn (typo
+  guard); absolute paths and `..` rejected; excluded items reported as
+  `user excluded` in the dry-run summary and reports/EXCLUDED.md; byte totals
+  and the 1 GiB budget recomputed. Companion flag `--list-files`: offline,
+  read-only, one `rel<TAB>bytes` row per surviving candidate — the dry-run
+  upload list truncates at 40 rows, so the GUI checklist needs this machine-
+  readable full view; rice_info lines share the stream and are skipped by
+  consumers. The earlier "backend frozen until user testing" scope (GUI-PLAN
+  C4) is superseded BY THE USER'S OWN request for tick/skip.
+- [DECISION] D33 2026-10-31 — `--export FILE.tar.gz` offline archives: skips auth
+  AND repo resolution entirely (no GitHub, no PAT); collection, deny list,
+  content scan, manifest, reports and the size budget all behave exactly as
+  usual (S4 scans still gate the commit); then tars the staging repository
+  INCLUDING .git, so the extracted directory is a real git repo restorable
+  with the EXISTING `rice-restore.sh --from file://<dir>`; relative paths
+  resolve against the caller's cwd (top level never cd's); export replaces
+  the push for that run — running twice yields both (documented in README);
+  RESTORE.md carries an offline variant.
+- [DECISION] D34 2026-10-31 — GUI session persistence: `~/.config/rice-backup/
+  gui.conf` (repo/home/preferences/geometry, configparser, 0600) +
+  `selection.txt` (the SKIPPED paths in exactly the --exclude-from format,
+  0600), both containing nothing credential-shaped (D27) and passed to the
+  backend verbatim as the selection file.
+- [DECISION] D35 2026-10-31 — IMPLEMENTATION DETAIL (S4): Python-side cred-assign
+  false positives (type annotations / attribute assignments whose left side
+  is a rule keyword) are fixed by RENAMING identifiers (auth -> auth_mode,
+  token attribute -> pat), never by whitelisting gui/ in scan-expect.txt —
+  the scan must stay strict on the files that carry the PAT.
+- [DECISION] D36 2026-10-31 — GUI file checklist uses virtualized Gtk.TreeView
+  (native CellRendererToggle) instead of the GUI-PLAN's Gtk.ListView: same
+  virtualization guarantee for 3600 rows, far simpler per-row checkboxes now
+  that tick/skip exists. GTK 4.6+ is the compatibility floor (Ubuntu 22.04 LTS
+  OK); no 4.10-only APIs. Backend prompts are read from raw stderr chunks
+  because they end WITHOUT a newline (LineAssembler + partial detection).
