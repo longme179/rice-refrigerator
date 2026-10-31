@@ -213,6 +213,11 @@ Three layers, precedence L1 > L2 > L3; every exclusion is reported by name (+ ru
   .env .env.* *.env *id_rsa* *id_ed25519* *id_ecdsa* *id_dsa* .bash_history .zsh_history
   .sh_history .python_history .node_repl_history .mysql_history .psql_history .sqlite_history
   .lesshst .viminfo .viminfo.tmp *.tfstate *.tfstate.*
+
+  [SESSION-3 ADDENDUM] added after a real Fedora 44 dry-run showed the Firefox XDG profile
+  at `.config/mozilla` sailing into the include set: `.config/mozilla`, `.local/share/mozilla`,
+  `.librewolf`, `.waterfox`, `.zen`, `.floorp` (DECISIONS D17). Binary cookie/session stores
+  carry no token shape, so L2 cannot catch them — the deny list is the only effective layer.
 - L2 content scan (S4 patterns + extras; hit → exclude + rule name):
   rules: gh-classic (ghp_/gho_/ghs_/ghr_), gh-fine-pat (github_pat_...), private-key, aws-access-key
   (AKIA...), aws-secret-label, google-api-key (AIza...), slack-token (xox...-), stripe-key
@@ -312,6 +317,12 @@ confirm (AC-15) · T13 repo create mocked (AC-16) · T14 restore dry-run no-op (
 T15 restore apply + timestamped backups (AC-14) · T16 cross-distro unmapped list (AC-14) ·
 T17 bash -n + lint rules (AC-17) · T18 README coverage greps (AC-18) · T19 unavailable tools
 graceful (AC-20) · T20 final workspace audit tree+history (AC-19).
+
+[SESSION-3 ADDENDUM] T21 (AC-21) PAT auth mode recorded + hard size budget refusal/
+--allow-oversize; T04/T06/T08/T19 extended for the Firefox XDG profile deny
+(`.config/mozilla`), Zen/Floorp homes, fcitx dbus junk, per-section bytes,
+top-15 largest list, gnome-extensions inventory. Driven by a real user dry-run
+on Fedora 44 (see journal 2026-10-31-03 and DECISIONS D17-D22).
 
 ### 8.5 Lint
 shellcheck if installable in the sandbox (apt or a static binary in /tmp); otherwise equivalent:

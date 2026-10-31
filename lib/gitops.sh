@@ -40,14 +40,17 @@ rice_auth_init() { # $1 = 1 when interactive input is allowed
     rice_err "gh is present but not authenticated, and this run is non-interactive"
     return 1
   fi
-  # PAT mode
+  # PAT mode (both paths MUST set the mode: rice_auth_setup_git and the dry-run
+  # summary key off it - a missing mode silently skips GIT_ASKPASS installation)
   if [ -n "${RICE_TOKEN:-}" ]; then
+    RICE_AUTH_MODE=pat
     rice_info "auth mode: RICE_TOKEN taken from the environment (memory only)"
     return 0
   fi
   if [ "$interactive" = "1" ] && rice_is_tty; then
     if rice_read_secret RICE_TOKEN "GitHub PAT (input hidden; lives only in memory): "; then
       if [ -n "$RICE_TOKEN" ]; then
+        RICE_AUTH_MODE=pat
         rice_info "auth mode: PAT accepted (never echoed, never stored)"
         return 0
       fi

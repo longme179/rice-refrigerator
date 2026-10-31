@@ -6,6 +6,7 @@
 
 RICE_MAX_FILE_BYTES=$((50 * 1024 * 1024))     # GitHub rejects >100MB; stay well below
 RICE_TOTAL_WARN_BYTES=$((800 * 1024 * 1024))  # soft warning threshold
+RICE_TOTAL_MAX_BYTES="${RICE_TOTAL_MAX_BYTES:-$((1024 * 1024 * 1024))}"  # hard budget (1 GiB; --allow-oversize overrides)
 
 # ---- L1: hard deny - directories (paths relative to $HOME, case-insensitive) ----
 RICE_DENY_DIRS=(
@@ -26,6 +27,12 @@ RICE_DENY_DIRS=(
   .docker
   .config/gh
   .mozilla
+  .config/mozilla
+  .local/share/mozilla
+  .librewolf
+  .waterfox
+  .zen
+  .floorp
   .config/google-chrome
   .config/google-chrome-beta
   .config/google-chrome-unstable
@@ -205,6 +212,7 @@ rice_is_cache_path() { # $1 lowercase rel path
     */.npm|*/.npm/*) return 0 ;;
     */.git|*/.git/*) return 0 ;;
     */Trash|*/Trash/*) return 0 ;;
+    .config/fcitx/dbus|.config/fcitx/dbus/*) return 0 ;;
     *.log) return 0 ;;
     *) return 1 ;;
   esac
@@ -274,7 +282,7 @@ rice_collect_home() { # $1 home
   # a few deny rules sit deeper than one level; probe them explicitly
   for rel in .var/app .gnome/keyrings .gnome2/keyrings .local/share/keyrings \
              .local/share/gopass .local/share/evolution .local/share/TelegramDesktop \
-             .local/share/kwalletd; do
+             .local/share/kwalletd .local/share/mozilla; do
     [ -n "${seen[$rel]:-}" ] && continue
     if { [ -e "$home/$rel" ] || [ -L "$home/$rel" ]; } \
        && [ -n "$(rice_deny_rule_for "$rel")" ]; then

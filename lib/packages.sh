@@ -121,6 +121,18 @@ rice_pkg_common() { # $1 out
   done
   [ "$found" -eq 1 ] || echo '# pipx venvs not found' > "$out/pipx.txt"
 
+  # GNOME Shell extensions (names + enabled state; the files themselves are
+  # backed up under .local/share/gnome-shell/extensions)
+  if rice_have gnome-extensions; then
+    gnome-extensions list 2>/dev/null > "$out/gnome-extensions.txt" \
+      || echo '# gnome-extensions list failed' > "$out/gnome-extensions.txt"
+    gnome-extensions list --enabled 2>/dev/null > "$out/gnome-extensions-enabled.txt" \
+      || echo '# gnome-extensions list --enabled failed' > "$out/gnome-extensions-enabled.txt"
+  else
+    echo '# gnome-extensions not available' > "$out/gnome-extensions.txt"
+    echo '# gnome-extensions not available' > "$out/gnome-extensions-enabled.txt"
+  fi
+
   # npm -g
   if rice_have npm; then
     npm ls -g --depth=0 2>/dev/null | tail -n +2 | sed -e 's/^[| ├ └ ─ ]*//' \
@@ -147,7 +159,7 @@ rice_pkg_common() { # $1 out
 # tool availability matrix for meta/ (also used by the dry-run summary)
 rice_packages_toolmatrix() {
   local t
-  for t in dnf pacman apt-mark flatpak snap pip3 npm pipx cargo gh curl; do
+  for t in dnf pacman apt-mark flatpak snap pip3 npm pipx cargo gnome-extensions gh curl; do
     if rice_have "$t"; then printf 'yes\t%s\n' "$t"; else printf 'no\t%s\n' "$t"; fi
   done
 }
@@ -164,8 +176,10 @@ rice_packages_plan_summary() {
   parts+=("flatpak:$(rice_have flatpak && printf yes || printf no)")
   parts+=("snap:$(rice_have snap && printf yes || printf no)")
   parts+=("pip:$(rice_have pip3 && printf yes || printf no)")
+  parts+=("pipx:$( if [ -d "$RICE_PKG_HOME/.local/pipx/venvs" ] || [ -d "$RICE_PKG_HOME/.local/share/pipx/venvs" ]; then printf yes; else printf no; fi )")
   parts+=("npm:$(rice_have npm && printf yes || printf no)")
   parts+=("cargo:$( if [ -r "$RICE_PKG_HOME/.cargo/.crates.toml" ] || [ -r "$RICE_PKG_HOME/.cargo/.crates2.toml" ]; then printf yes; else printf no; fi )")
+  parts+=("gnome-ext:$(rice_have gnome-extensions && printf yes || printf no)")
   local IFS=';'
   printf '%s' "${parts[*]}"
 }

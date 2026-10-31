@@ -4,7 +4,7 @@
 #
 # Usage:
 #   rice-backup.sh [--dry-run] [--yes] [--include-system] [--repo OWNER/NAME]
-#                  [--home DIR] [--keep-stage]
+#                  [--home DIR] [--keep-stage] [--allow-oversize]
 #   rice-backup.sh restore [rice-restore options...]   (passes through)
 #   rice-backup.sh --help
 #
@@ -43,6 +43,7 @@ DRYRUN=0
 ASSUME_YES=0
 INCLUDE_SYSTEM=0
 KEEP_STAGE=0
+ALLOW_OVERSIZE=0
 RICE_HOME="${HOME}"
 REPO_ARG="${RICE_REPO:-}"
 
@@ -57,6 +58,8 @@ usage: rice-backup.sh [options]
   --repo OWNER/NAME   target repository (prompted otherwise; RICE_REPO env works)
   --home DIR          home directory to back up (default: $HOME)
   --keep-stage        keep the temporary staging dir for debugging
+  --allow-oversize    permit a run whose total exceeds the 1 GiB budget
+                      (RICE_TOTAL_MAX_BYTES overrides the budget value)
   restore ...         run the matching restore tool
   -h, --help          this help
 
@@ -77,6 +80,7 @@ while [ $# -gt 0 ]; do
     --repo) [ $# -ge 2 ] || usage 2; REPO_ARG=$2; shift 2 ;;
     --home) [ $# -ge 2 ] || usage 2; RICE_HOME=$2; shift 2 ;;
     --keep-stage) KEEP_STAGE=1; shift ;;
+    --allow-oversize) ALLOW_OVERSIZE=1; shift ;;
     -h|--help) usage 0 ;;
     --) shift; break ;;
     *) printf 'unknown option: %s\n' "$1" >&2; usage 2 ;;
@@ -175,6 +179,32 @@ topfile_count() {
   printf '%s' "$n"
 }
 
+# bytes of one section (field 2 of RICE_META_INC entries), pure parameter
+# expansion so 3000+ candidates stay fast
+section_bytes() { # $1 prefix pattern
+  local t=0 p m b
+  for m in "${RICE_META_INC[@]}"; do
+    p=${m%%$'\t'*}
+    # shellcheck disable=SC2254
+    case "$p" in
+      $1*) b=${m#*$'\t'}; b=${b%%$'\t'*}; t=$((t + ${b:-0})) ;;
+    esac
+  done
+  printf '%s' "$t"
+}
+
+topfile_bytes() {
+  local t=0 p m b
+  for m in "${RICE_META_INC[@]}"; do
+    p=${m%%$'\t'*}
+    case "$p" in
+      */*) ;;
+      *) b=${m#*$'\t'}; b=${b%%$'\t'*}; t=$((t + ${b:-0})) ;;
+    esac
+  done
+  printf '%s' "$t"
+}
+
 printf '\n=== rice-backup dry-run summary ===\n'
 printf 'home       : %s\n' "$RICE_HOME"
 printf 'distro     : %s (%s desktop) host=%s\n' "$(rice_distro_version)" "$RICE_DE" "$(hostname 2>/dev/null || echo unknown)"
@@ -182,10 +212,12 @@ printf 'target     : %s (private: %s) branch main\n' "$(rice_remote_url "$REPO_O
 printf 'auth       : %s\n' "$RICE_AUTH_MODE"
 
 printf '\nwould upload (read-only pass done, nothing staged yet):\n'
-printf '  dotfiles              : %s file(s)\n' "$(topfile_count)"
-printf '  .config/**            : %s file(s)\n' "$(section_count '.config/*')"
-printf '  .local/**             : %s file(s)\n' "$(section_count '.local/*')"
-printf '  fonts/icons/themes    : %s file(s)\n' "$(( $(section_count '.fonts/*') + $(section_count '.icons/*') + $(section_count '.themes/*') ))"
+printf '  dotfiles              : %s file(s), %s\n' "$(topfile_count)" "$(rice_hr_size "$(topfile_bytes)")"
+printf '  .config/**            : %s file(s), %s\n' "$(section_count '.config/*')" "$(rice_hr_size "$(section_bytes '.config/*')")"
+printf '  .local/**             : %s file(s), %s\n' "$(section_count '.local/*')" "$(rice_hr_size "$(section_bytes '.local/*')")"
+printf '  fonts/icons/themes    : %s file(s), %s\n' \
+  "$(( $(section_count '.fonts/*') + $(section_count '.icons/*') + $(section_count '.themes/*') ))" \
+  "$(rice_hr_size "$(( $(section_bytes '.fonts/*') + $(section_bytes '.icons/*') + $(section_bytes '.themes/*') ))")"
 printf '  /etc allowlist        : %s file(s)%s\n' "${#RICE_ETC_INCLUDE[@]}" \
   "$([ "$INCLUDE_SYSTEM" -eq 1 ] || printf ' (not requested: use --include-system)')"
 printf '  package inventories   : %s\n' "$(rice_packages_plan_summary)"
@@ -199,6 +231,13 @@ for p in "${RICE_INCLUDE[@]}"; do
   SHOWN=$((SHOWN + 1))
 done
 [ "$SHOWN" -gt 40 ] && printf '    ... and %s more\n' "$((SHOWN - 40))"
+if [ ${#RICE_META_INC[@]} -gt 0 ]; then
+  printf '\nlargest candidates (top 15 by size):\n'
+  printf '%s\n' "${RICE_META_INC[@]}" | sort -t$'\t' -k2,2 -rn | head -15 | cut -f1,2 \
+    | while IFS=$'\t' read -r p b; do
+        printf '    %9s  %s\n' "$(rice_hr_size "$b")" "$p"
+      done
+fi
 if [ "$RICE_TOTAL_BYTES" -gt "$RICE_TOTAL_WARN_BYTES" ]; then
   printf '[rice-backup] WARNING: total exceeds %s; GitHub may throttle or reject large pushes\n' \
     "$(rice_hr_size "$RICE_TOTAL_WARN_BYTES")" >&2
@@ -214,6 +253,18 @@ for i in "${RICE_SKIPPED_BIG[@]}"; do printf '    - %s (%s)\n' "${i%%$'\t'*}" "$
 printf '  caches/junk     : %s item(s)\n' "${#RICE_SKIPPED_CACHE[@]}"
 for i in "${RICE_SKIPPED_CACHE[@]}"; do printf '    - %s\n' "$i"; done
 printf '\n'
+
+# ---- size budget (default 1 GiB, RICE_TOTAL_MAX_BYTES overrides) ----
+if [ "$RICE_TOTAL_BYTES" -gt "$RICE_TOTAL_MAX_BYTES" ]; then
+  if [ "$DRYRUN" -eq 1 ]; then
+    printf '[rice-backup] WARNING: total %s exceeds the %s budget; a real run needs --allow-oversize\n' \
+      "$(rice_hr_size "$RICE_TOTAL_BYTES")" "$(rice_hr_size "$RICE_TOTAL_MAX_BYTES")" >&2
+  elif [ "$ALLOW_OVERSIZE" -ne 1 ]; then
+    rice_die "total $(rice_hr_size "$RICE_TOTAL_BYTES") exceeds the $(rice_hr_size "$RICE_TOTAL_MAX_BYTES") budget - refusing to push. Run --dry-run to see the largest candidates, trim bulk data, or re-run with --allow-oversize" 5
+  else
+    rice_warn "size budget exceeded but --allow-oversize was given (total $(rice_hr_size "$RICE_TOTAL_BYTES"))"
+  fi
+fi
 
 if [ "$DRYRUN" -eq 1 ]; then
   rice_info "dry-run complete: nothing was staged, committed or pushed."

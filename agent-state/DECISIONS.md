@@ -79,3 +79,44 @@ Format: [DECISION] / [ASSUMPTION] with ID, date, reason.
   formatting); call sites that need formatting use printf directly. Reason: several call sites
   pass exit codes or user-controlled paths as extra args, which printf formatting would
   misinterpret, and a % character inside an interpolated path would break a format string.
+
+## Session 3 additions (real-user dry-run feedback)
+
+- [DECISION] D17 2026-10-31 — Firefox profile locations are denied in BOTH places: `.mozilla`
+  AND `.config/mozilla` (plus `.local/share/mozilla`, `.librewolf`, `.waterfox`, `.zen`,
+  `.floorp`). A real Fedora 44 dry-run proved current Firefox keeps its profile under
+  `~/.config/mozilla/firefox/<id>.default-release/` — cookies.sqlite, key4.db, logins.json,
+  places.sqlite and non-cache site storage were inside the include set, excluded only by the
+  `*history*` glob and cache paths. Binary session stores carry no token shape, so the L2
+  content scan can NEVER catch them; the deny list is the only effective layer (README
+  Limitations now says so explicitly).
+- [DECISION] D18 2026-10-31 — rice_auth_init sets RICE_AUTH_MODE=pat on BOTH PAT paths (env
+  token and hidden prompt). Previously the mode stayed empty, which (a) printed a blank
+  `auth:` line in the summary — the symptom the user actually noticed — and (b) made
+  rice_auth_setup_git skip GIT_ASKPASS installation, so real PAT-mode pushes could not
+  authenticate. The suite missed it because tests mock gh or push to file:// remotes.
+  Regression test T21 asserts the mode at unit level and in the summary.
+- [DECISION] D19 2026-10-31 — The dry-run summary shows per-section byte totals and the top 15
+  largest candidates (sorted by bytes, human-readable), and a HARD total budget
+  (RICE_TOTAL_MAX_BYTES, default 1 GiB) refuses the real run (exit 5) unless --allow-oversize
+  is given; dry-run warns instead. Rationale: the user's real dry-run was 8 GiB with only a
+  single warning line and no way to see what was big — a warning that cannot stop anything is
+  not a control.
+- [DECISION] D20 2026-10-31 — Package inventories gain gnome-extensions (list + list --enabled,
+  best-effort with availability notes) and the plan summary gains pipx: and gnome-ext: keys
+  (pipx was collected but invisible in the summary; gnome-extensions was not collected at all
+  despite PLAN section 4 requiring it).
+- [DECISION] D21 2026-10-31 — `.config/fcitx/dbus/*` runtime peer-registration files are L3
+  junk (skipped + listed), not rice. Found in the user's include list; harmless but noise.
+- [DECISION] D22 2026-10-31 — secret-scan.sh git mode streams blobs through GNU grep (phase 1:
+  combined patterns case-insensitively to find suspects; phase 2: per-rule attribution with
+  each rule's real case sensitivity) instead of per-rule `git grep`. Measured cause: git
+  grep's ERE engine backtracks catastrophically on the url-embedded-creds rule — 16.9 s on a
+  51-file fixture vs 0.042 s after the rewrite (a 400x speedup); a full test backup dropped
+  from 34.5 s to 0.96 s. This also affects users directly: the pre-push hook runs git-mode
+  scans on every push, and any backup containing URLs would have hit the same wall. The exact
+  needle pass stays on `git grep -F` (literal search, no backtracking, pattern via stdin).
+- [ASSUMPTION] A6 2026-10-31 — A 1 GiB default budget is the right trade-off for the layer of
+  users this tool targets (configs, themes, fonts, wallpapers); heavy-media users have
+  --allow-oversize and RICE_TOTAL_MAX_BYTES. Revisit if real-world dry-runs routinely exceed
+  it with legitimate rice content.

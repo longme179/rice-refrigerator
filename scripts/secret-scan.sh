@@ -179,38 +179,60 @@ exact_batch() {
   done < <(printf '%s\n' "$needle" | grep -aIZlF -f - -- "${files[@]}" 2>/dev/null || true)
 }
 
-# git mode: scan the tree of revision $1 with git grep
+# git mode: scan the tree of revision $1 by streaming each blob through GNU
+# grep - the SAME engine as tree/files mode. Reason (found while profiling a
+# real backup): git grep's own ERE engine backtracks catastrophically on the
+# url-embedded-creds rule (17 s on a 51-file fixture vs milliseconds for GNU
+# grep on identical content), and its "rev:path:" line prefixes corrupt
+# cred-assign value whitelisting (session 2). Phase 1 matches the combined
+# pattern set case-INSENSITIVELY (a superset) to find suspects cheaply with
+# one blob read per file; phase 2 attributes hits with each rule's real
+# case sensitivity, so results are identical to the per-rule scan.
 scan_git_rev() {
   local rev=$1
   local r rule ci re f
-  SCANNED=$(git ls-tree -r --name-only "$rev" 2>/dev/null | wc -l)
-  # git grep prefixes paths with "REV:"; strip exactly that prefix so paths
-  # stay repo-relative (needed for --expect matching and history dedup)
+  local -a files=()
+  mapfile -t files < <(git ls-tree -r --name-only "$rev" 2>/dev/null || true)
+  SCANNED=${#files[@]}
+  [ ${#files[@]} -gt 0 ] || return 0
+
+  local all_args=()
   for r in "${RICE_RULES[@]}"; do
     IFS='~' read -r rule ci re <<<"$r"
-    if [ "$rule" = "cred-assign" ]; then
-      # per-file check: git grep -o lines carry a "rev:path:" prefix that would
-      # corrupt value parsing, so stream the blob through GNU grep instead
-      while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        f=${f#"$rev":}
+    all_args+=(-e "$re")
+  done
+
+  # phase 1: which blobs have any case-insensitive hit at all (fast filter)
+  local -A suspect_map=()
+  for f in "${files[@]}"; do
+    if git show "$rev:$f" 2>/dev/null | grep -aqEi "${all_args[@]}"; then
+      suspect_map["$f"]=1
+    fi
+  done
+  [ ${#suspect_map[@]} -gt 0 ] || return 0
+
+  # phase 2: attribute each suspect blob to rules (no matched text printed)
+  for f in "${!suspect_map[@]}"; do
+    for r in "${RICE_RULES[@]}"; do
+      IFS='~' read -r rule ci re <<<"$r"
+      if [ "$rule" = "cred-assign" ]; then
         if git show "$rev:$f" 2>/dev/null | grep -aoEi -e "$re" | nonwhitelisted_seen; then
           report_hit "$rule" "$f"
         fi
-      done < <(git grep -aIlEi -e "$re" "$rev" -- 2>/dev/null || true)
-    elif [ "$ci" = "1" ]; then
-      while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        report_hit "$rule" "${f#"$rev":}"
-      done < <(git grep -aIlEi -e "$re" "$rev" -- 2>/dev/null || true)
-    else
-      while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        report_hit "$rule" "${f#"$rev":}"
-      done < <(git grep -aIlE -e "$re" "$rev" -- 2>/dev/null || true)
-    fi
+      elif [ "$ci" = "1" ]; then
+        if git show "$rev:$f" 2>/dev/null | grep -aoqEi -e "$re"; then
+          report_hit "$rule" "$f"
+        fi
+      else
+        if git show "$rev:$f" 2>/dev/null | grep -aoqE -e "$re"; then
+          report_hit "$rule" "$f"
+        fi
+      fi
+    done
   done
-  # exact needle over the revision (pattern arrives via stdin, never argv)
+
+  # exact needle over the revision (pattern arrives via stdin, never argv);
+  # -F literal search is safe in git grep (no backtracking)
   local needle=${RICE_SCAN_EXACT:-${RICE_TOKEN:-}}
   if [ -n "$needle" ] && [ ${#needle} -ge 8 ]; then
     while IFS= read -r f; do

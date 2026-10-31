@@ -26,7 +26,8 @@ RESULTS="$SUITE/results.tsv"
 # The canary fixture (tests/fixtures/home) and tests/canaries.txt are
 # generated at runtime and never committed (GitHub push protection rejects
 # token-shaped data even when it is fake). Build them if they are missing.
-if [ ! -f "$CANARIES" ] || [ ! -e "$FIXTURES/home/.config/weird/github-pat" ]; then
+if [ ! -f "$CANARIES" ] || [ ! -e "$FIXTURES/home/.config/weird/github-pat" ] \
+   || [ ! -e "$FIXTURES/home/.config/mozilla/firefox/xyz.default-release/cookies.sqlite" ]; then
   printf 'building runtime fixtures (tests/fixtures/build.sh)...\n'
   bash "$FIXTURES/build.sh" >/dev/null || { printf 'fixture build failed\n' >&2; exit 2; }
 fi
@@ -170,6 +171,16 @@ t04() { # AC-01/04 dry-run summary, deny list by rule, names only, remote untouc
   assert_match "t04 scan hit exact needle" "$out" "- .config/misc/notes.txt [exact]"
   assert_match "t04 oversized listed with size" "$out" ".config/bigapp/data.bin (60 MiB)"
   assert_match "t04 cache dir listed" "$out" "- .cache/"
+  # session 3: Firefox XDG profile (.config/mozilla) must be denied wholesale
+  assert_match "t04 deny XDG firefox profile by rule" "$out" \
+    "- .config/mozilla/firefox/xyz.default-release/cookies.sqlite [deny-dir:.config/mozilla]"
+  assert_match "t04 deny zen profile" "$out" "- .zen [deny-dir:.zen]"
+  assert_no_match "t04 XDG firefox files never in upload list" "$out" "    .config/mozilla/"
+  assert_match "t04 fcitx dbus runtime junk skipped" "$out" "- .config/fcitx/dbus/9f61c0ffee0000-0"
+  assert_match "t04 auth mode recorded" "$out" "auth       : gh"
+  assert_match "t04 largest candidates section" "$out" "largest candidates (top 15 by size)"
+  assert_match_re "t04 largest lists small.bin with size" "$out" '100 KiB +\.config/bigapp/small\.bin$'
+  assert_match_re "t04 per-section bytes shown" "$out" '\.config/\*\* +: [0-9]+ file\(s\), [0-9]+ [KMG]iB'
   assert_eq "t04 remote untouched" "$(revcount "$TW/remote-base/test/backup.git")" "0"
   local v
   while IFS= read -r v; do
@@ -216,6 +227,10 @@ t06() { # AC-02/03/04/05/06/07 full backup: push, canaries absent, reports, mani
   assert_nofile "t06 docker config absent" "$TW/clone/home/.docker"
   assert_nofile "t06 kdbx absent" "$TW/clone/Notes.kdbx"
   assert_nofile "t06 browser profile absent" "$TW/clone/home/.mozilla"
+  assert_nofile "t06 XDG firefox profile absent" "$TW/clone/home/.config/mozilla"
+  assert_nofile "t06 zen profile absent" "$TW/clone/home/.zen"
+  assert_file_match "t06 EXCLUDED lists XDG firefox cookies" "$TW/clone/reports/EXCLUDED.md" \
+    "- .config/mozilla/firefox/xyz.default-release/cookies.sqlite [deny-dir:.config/mozilla]"
   assert_nofile "t06 flatpak app data absent" "$TW/clone/home/.var"
   assert_nofile "t06 pki absent" "$TW/clone/home/.pki"
   assert_nofile "t06 scan-hit file absent" "$TW/clone/home/.config/myapp/token.ini"
@@ -288,6 +303,8 @@ t08() { # AC-10 package inventories via mocks, all three distro families
     assert_file_match "t08 $d pip inventory" "$P/pip-user.txt" "requests==2.31.0"
     assert_file_match "t08 $d pipx inventory" "$P/pipx.txt" "tool-a"
     assert_file_match "t08 $d cargo inventory" "$P/cargo.txt" "ripgrep"
+    assert_file_match "t08 $d gnome-extensions inventory" "$P/gnome-extensions.txt" "bar@example.com"
+    assert_file_match "t08 $d gnome-extensions enabled inventory" "$P/gnome-extensions-enabled.txt" "foo@example.com"
   done
 }
 
@@ -535,6 +552,7 @@ t19() { # AC-20 graceful degradation when package managers are unavailable
   assert_file_match "t19 snap unavailable noted" "$P/snap.txt" "# snap not installed"
   assert_file_match "t19 npm unavailable noted" "$P/npm-global.txt" "# npm not installed"
   assert_file_match "t19 pip unavailable noted" "$P/pip-user.txt" "# pip not available"
+  assert_file_match "t19 gnome-extensions unavailable noted" "$P/gnome-extensions.txt" "# gnome-extensions not available"
 }
 
 t20() { # AC-19 workspace audit: tree clean, history clean except documented benign hits
@@ -554,9 +572,46 @@ t20() { # AC-19 workspace audit: tree clean, history clean except documented ben
   )
 }
 
+t21() { # AC-21 session 3: PAT auth mode recorded + hard size budget with --allow-oversize
+  TW=$SUITE/t21; mkdir -p "$TW/home"; make_home "$TW/home"; make_remote test/backup
+  # PAT path with no gh on PATH (mocks-min)
+  export RICE_TEST_DISTRO=fedora
+  export RICE_TEST_GIT_BASE="file://$TW/remote-base"
+  export RICE_TOKEN="fake-test-token-abcdefghijklmnop"
+  export RICE_SCAN_EXACT="RICECANARYEXACTSECRETVALUE42"
+  export PATH="$MOCKS_MIN:$ORIG_PATH"
+  out=$(backup --home "$TW/home" --repo test/backup --dry-run); rc=$?
+  assert_rc "t21 PAT dry-run rc" "$rc" 0
+  assert_match "t21 auth mode recorded as pat" "$out" "auth       : pat"
+  # unit level: rice_auth_init must SET the mode (regression: it never did)
+  (
+    # shellcheck disable=SC1090,SC1091
+    . "$ROOT/lib/common.sh" >/dev/null; . "$ROOT/lib/gitops.sh" >/dev/null
+    RICE_AUTH_MODE=""
+    rice_auth_init 0 >/dev/null 2>&1
+    assert_eq "t21 RICE_AUTH_MODE=pat for env token" "$RICE_AUTH_MODE" "pat"
+    RICE_AUTH_MODE=""; RICE_TOKEN=""
+    rice_auth_init 0 >/dev/null 2>&1 && rc2=0 || rc2=1
+    assert_rc "t21 no token + non-interactive fails" "$rc2" 1
+  )
+  # size budget: tiny budget -> real run refuses without the flag
+  export RICE_TOTAL_MAX_BYTES=1024
+  out=$(backup --home "$TW/home" --repo test/backup --yes); rc=$?
+  assert_rc "t21 over-budget run refused (exit 5)" "$rc" 5
+  assert_match "t21 budget refusal names the flag" "$out" "--allow-oversize"
+  assert_eq "t21 refused run pushed nothing" "$(revcount "$TW/remote-base/test/backup.git")" "0"
+  out=$(backup --home "$TW/home" --repo test/backup --dry-run); rc=$?
+  assert_rc "t21 dry-run fine over budget" "$rc" 0
+  assert_match "t21 budget warning in dry-run" "$out" "--allow-oversize"
+  out=$(backup --home "$TW/home" --repo test/backup --yes --allow-oversize); rc=$?
+  assert_rc "t21 over-budget allowed with flag" "$rc" 0
+  assert_eq "t21 push happened with flag" "$(revcount "$TW/remote-base/test/backup.git")" "1"
+  unset RICE_TOTAL_MAX_BYTES
+}
+
 # --------------------------------------------------------------------- runner
 printf 'rice-backup acceptance suite\n  root: %s\n  work: %s\n\n' "$ROOT" "$SUITE"
-TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20"
+TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21"
 for t in $TESTS; do
   printf '%s\n' "-- $t"
   ( "$t" ) || true

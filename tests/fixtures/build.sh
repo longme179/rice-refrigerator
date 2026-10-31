@@ -170,6 +170,17 @@ esac
 exit 0
 EOF
 
+cat > "$M/gnome-extensions" <<'EOF'
+#!/bin/sh
+# mock gnome-extensions for the test suite
+case "$*" in
+  "list --enabled") printf 'foo@example.com\n' ;;
+  "list") printf 'foo@example.com\nbar@example.com\n' ;;
+  *) exit 1 ;;
+esac
+exit 0
+EOF
+
 cat > "$M/gh" <<'EOF'
 #!/bin/sh
 # mock gh CLI for the test suite (answers auth status / api GET / repo create)

@@ -99,3 +99,37 @@ over recollection. Never write secrets here.
   is now generated at runtime into git-ignored paths (tests/fixtures/home/, tests/canaries.txt);
   the committed tree carries only home-clean/ + the generator (DECISIONS D9). Local unpushed
   commit rewritten (the one permitted case); suite re-run green afterwards.
+
+## Session 3 — 2026-10-31 (real-user dry-run feedback)
+
+## Session-3 bootstrap
+- Sandbox recycled: /tmp/rice-auth gone. Per S3, pushing requires the user to re-supply the
+  PAT; until then all work is local commits only.
+- Working-tree file modes had been flipped by sandbox re-materialization (47 files,
+  0 content changes) → repo-local core.fileMode=false; fixture modes re-applied from the
+  git index (private.conf 600, myscript 755).
+- Origin/main in sync at 5b713d7 before any edit (git status -sb).
+- Trigger: the user ran the tool's --dry-run on their real Fedora 44 machine and asked
+  whether the output was normal. Two real bugs found from that output (journal 03):
+  (a) `.config/mozilla` (Firefox XDG profile: cookies.sqlite/key4.db/logins.json/
+  places.sqlite/site storage) was NOT deny-listed → would have been uploaded;
+  (b) RICE_AUTH_MODE never set to `pat` in PAT mode → blank `auth:` line AND
+  GIT_ASKPASS never installed → real PAT pushes could not authenticate.
+- PROCESS INCIDENT (lesson): `git checkout-index -f -a` (run to restore file modes)
+  overwrote every TRACKED file from the index and wiped the session's uncommitted edits;
+  only untracked files (new fixtures, journal 03) survived. Everything was re-applied and
+  the suite re-run green BEFORE committing. Rule going forward: commit at each green
+  milestone — never leave accepted work only in the working tree.
+
+## NEXT ACTION (write-ahead) — session 3, current
+- DONE: fixes D17-D22 applied (deny list, auth mode, size reporting + budget, inventories,
+  fcitx dbus junk, scanner git-mode rewrite), fixtures + mock + T21 added, README/PLAN
+  updated, version 0.1.1.
+- TODO: full suite green → S4 tree+history audit → commit → rebuild 0.1.1 tarball into
+  download/ → Vietnamese report + PAT request for the push (S3).
+
+## Session-3 result log (append-only, evidence commands)
+- [s3] RAN `bash tests/fixtures/build.sh` — fixtures include the new inert XDG-profile
+  files, .zen profile, fcitx dbus junk, gnome-extensions mock.
+- [s3] RAN profiling: `secret-scan.sh git HEAD` = 16.9 s (pre-fix) → 0.042 s (post-fix);
+  full backup run 34.5 s → 0.96 s (evidence in journal 03).

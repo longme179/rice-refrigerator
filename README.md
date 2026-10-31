@@ -53,13 +53,16 @@ size, mode, symlink target), `meta/` (distro, date, host, tool availability),
 Layer 1 — **hard deny list** (always wins, no flag can override): `~/.ssh`,
 `~/.gnupg`, keyrings, password stores, KeePass databases (`*.kdbx`, `*.kdb`),
 private key material (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `*id_rsa*`, …),
-browser profiles (Firefox/Chrome/Chromium/Brave/Vivaldi/Opera/Edge/LibreWolf,
-including their flatpak data under `~/.var/app`), messaging apps that store
-session secrets (Discord, Signal, Element, Telegram, Slack, Zoom, Keybase),
-credential CLIs (`~/.aws`, `~/.azure`, `~/.kube`, `~/.config/gh`, `~/.docker`,
-gcloud), `.netrc`, `.git-credentials`, `.pypirc`, `.env*` and every
-`*history*` / shell-history file. These are listed in `EXCLUDED.md` with the
-rule that matched — contents are never read, copied or printed.
+browser profiles — Firefox in **both** its locations (`~/.mozilla` and the
+XDG `~/.config/mozilla`, where current Fedora Firefox actually keeps
+cookies.sqlite, key4.db, logins.json and site storage), Chrome/Chromium/Brave/
+Vivaldi/Opera/Edge/LibreWolf/Waterfox/Zen/Floorp, including their flatpak data
+under `~/.var/app` — messaging apps that store session secrets (Discord,
+Signal, Element, Telegram, Slack, Zoom, Keybase), credential CLIs (`~/.aws`,
+`~/.azure`, `~/.kube`, `~/.config/gh`, `~/.docker`, gcloud), `.netrc`,
+`.git-credentials`, `.pypirc`, `.env*` and every `*history*` /
+shell-history file. These are listed in `EXCLUDED.md` with the rule that
+matched — contents are never read, copied or printed.
 
 Layer 2 — **content scan** of every remaining candidate with the same rule set
 that gates this repository's own pushes (GitHub token shapes, private key
@@ -71,8 +74,13 @@ intentional and cheaper than a leaked credential. Hits are listed in
 `EXCLUDED.md` by path + rule name, never by value.
 
 Layer 3 — hygiene: caches (`~/.cache`, `node_modules`, `__pycache__`, `Trash`,
-…) and files larger than **50 MiB** are skipped and listed in `SKIPPED.md`
-(GitHub hard-rejects files over 100 MiB; we stay well below).
+fcitx dbus runtime sockets, …) and files larger than **50 MiB** are skipped
+and listed in `SKIPPED.md` (GitHub hard-rejects files over 100 MiB; we stay
+well below). On top of that a **total size budget** (default **1 GiB**, tunable
+via `RICE_TOTAL_MAX_BYTES`) refuses the real run — with a clear message — when
+the backup would exceed it; `--allow-oversize` is the explicit opt-in. The
+dry-run prints per-section byte totals and the **top 15 largest candidates**
+so you always know what is eating the budget.
 
 If a file you care about is excluded: open it yourself, move the secret out of
 it (e.g. into a password manager or an unreferenced include), and re-run.
@@ -82,16 +90,18 @@ it (e.g. into a password manager or an unreferenced include), and re-run.
 ```sh
 ./bin/rice-backup.sh [--dry-run] [--yes] [--include-system]
                      [--repo OWNER/NAME] [--home DIR] [--keep-stage]
+                     [--allow-oversize]
 ```
 
 | option | effect |
 |---|---|
-| `--dry-run` | show the full summary and exclusions, then stop. Nothing is staged or pushed. **Run this first.** |
+| `--dry-run` | show the full summary (per-section sizes, top-15 largest files) and exclusions, then stop. Nothing is staged or pushed. **Run this first.** |
 | `--yes` | skip the y/N confirmation. The public-repo typed check is **never** bypassed by this flag. |
 | `--include-system` | also collect the scanned `/etc` allowlist |
 | `--repo OWNER/NAME` | target repository (otherwise you are prompted; `RICE_REPO` env works too) |
 | `--home DIR` | back up a different home directory (default `$HOME`) |
 | `--keep-stage` | keep the temp staging dir for debugging |
+| `--allow-oversize` | allow a run whose total exceeds the 1 GiB budget (`RICE_TOTAL_MAX_BYTES` overrides the budget value; exit code 5 is the refusal) |
 
 Authentication (in order of preference):
 
@@ -181,8 +191,12 @@ confirm before anything is pushed.
 - `~/.var/app` (flatpak app data) is excluded by default — flatpak browsers
   and KeePassXC keep credentials there. The flatpak app list is still recorded
   so your setup stays reproducible.
-- The content scanner matches known secret *shapes*; an unusual format could
-  pass it. Always review the dry-run list — it prints every uploaded filename.
+- The content scanner matches known secret *shapes*; binary credential
+  stores whose filenames carry no such shape (a `cookies.sqlite` copied to a
+  random path, an exported session database) can pass it. That is exactly why
+  browser/messenger profile DIRECTORIES are denied wholesale in layer 1 —
+  keep them out of any include path. Always review the dry-run list — it
+  prints every uploaded filename.
 - dconf and crontab collection requires those commands (a note is recorded
   otherwise); restoring them applies to the running user session only.
 - Development testing runs on Debian 13 with fully mocked package managers
@@ -196,7 +210,7 @@ confirm before anything is pushed.
 ## Development
 
 ```sh
-bash tests/run-tests.sh          # full acceptance suite (T01-T20), no network needed
+bash tests/run-tests.sh          # full acceptance suite (T01-T21), no network needed
 bash tests/containers.sh         # three-distro matrix (NOT RUN without podman/docker)
 bash tests/fixtures/build.sh     # rebuild fixture $HOME + mocks + canary list
 scripts/secret-scan.sh --help    # the S4 scanner (tree / files / git / history modes)
