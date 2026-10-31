@@ -212,3 +212,25 @@ over recollection. Never write secrets here.
   download/README.md restored + extended. 0.1.0 tarball kept with its warning.
 - [s5] FINAL: session-5 records + journal 05 committed and pushed (this commit).
   Remote is the durable copy of everything; future sessions start from origin/main.
+
+## Session 6 — 2026-10-31 (user's real-machine dry-run of 0.1.1 — analysis only)
+
+## NEXT ACTION (write-ahead) — session 6, current
+- Analyze the user-pasted real-machine 0.1.1 dry-run log against D17-D22; verify the
+  two open questions in code (budget-warning placement, fonts bucket attribution);
+- record findings in journal 06 + STATE; S4 gate; commit; push. No backend changes.
+
+## Session-6 result log (append-only)
+- [s6] RAN (user's machine, log pasted in chat; paste truncated mid-deny-list):
+  dry-run against the public target repo in PAT mode.
+- [s6] VERIFIED from that log: D17 (mozilla fully denied, both profiles, 449 deny
+  items incl. cookies/key4/logins/places/bitwarden+github site storage), D18
+  (auth: pat), D19 (size report + top-15), D20 (gnome-ext:yes).
+- [s6] RAN code check: the 1 GiB budget warning prints at the END of dry-run output
+  (bin/rice-backup.sh:257-267, stderr) — below the paste's cut, not missing; real run
+  would exit 5 without --allow-oversize (total 8 GiB). fonts/icons/themes bucket
+  counts only legacy top-level dirs (XDG fonts are under .local/**) — cosmetic.
+- [s6] GAP noted for D32 (not implemented, user mid-testing): no --exclude option;
+  payload is dominated by re-downloadable fonts (Iosevka NerdFont × 14 MiB variants)
+  and .local/bin/uv 36 MiB. User advised to trim before the first real run.
+- [s6] RAN S4 gate + commit + push of this record (see journal 06).
