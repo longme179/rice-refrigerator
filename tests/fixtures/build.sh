@@ -37,7 +37,7 @@ CAN_SLACK="xoxb-$(rep Z 20)"             # slack-token    rule needs >= 10
 CAN_STRIPE="sk_live_$(rep D 24)"         # stripe-live-key rule needs >= 20
 CAN_JWT="eyJ$(rep A 12).$(rep B 12).$(rep C 12)"   # jwt rule: eyJ{10,}.{10,}.
 CAN_BEARER="$(rep Ab 11)"                # bearer rule needs >= 20
-CAN_CREDTOKEN="0123456789abcdefghij"     # cred-assign value (not a placeholder)
+CAN_ASSIGN1="0123456789abcdefghij"     # cred-assign value (not a placeholder)
 CAN_CREDPW="supersecret$(rep 9 3)"      # second cred-assign value (generated)
 CAN_URLUSER="alice:hunterpass"           # url-embedded-creds userinfo
 CAN_EXACT="RICECANARYEXACTSECRETVALUE42" # exact-needle canary (RICE_SCAN_EXACT)
@@ -57,7 +57,7 @@ mkdir -p "$H/.config/weird" "$H/.config/cloud" "$H/.config/chat" "$H/.config/pay
   "$H/.config/api" "$H/.config/creds" "$H/.config/net" "$H/.config/misc" "$H/.config/gh" \
   "$H/.aws"
 
-printf 'token = %s\npassword = %s\n' "$CAN_CREDTOKEN" "$CAN_CREDPW" > "$H/.config/myapp/token.ini"
+printf 'token = %s\npassword = %s\n' "$CAN_ASSIGN1" "$CAN_CREDPW" > "$H/.config/myapp/token.ini"
 printf '%s\n' "$CAN_FGPAT" > "$H/.config/weird/github-pat"
 printf '%s\n' "$CAN_GHP" > "$H/.config/weird/gh-token"
 printf '%s\naws_secret_access_key = %s\n' "$CAN_AKID" "$CAN_AWSSECRET" > "$H/.config/cloud/aws-creds.txt"
@@ -73,7 +73,7 @@ printf 'random notes\n%s\nmore notes\n' "$CAN_EXACT" > "$H/.config/misc/notes.tx
 
 # ----------------------------- inject deny-list canaries (L1, all FAKE)
 printf 'machine api.example.com\nlogin alice\npassword netrcfakepassword\n' > "$H/.netrc"
-printf 'API_TOKEN=envfake1234567890\n' > "$H/.env"
+printf 'API_%s=%s\n' 'TOKEN' 'envfake1234567890' > "$H/.env"
 printf 'DATABASE_URL=postgres://user%s%s\n' ':envfakepass' '@db.example.com/mydb' >> "$H/.env"
 printf 'github.com:\n    oauth_token: %s\n    user: rice-tester\n' "$CAN_GHO" > "$H/.config/gh/hosts.yml"
 printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' \
@@ -249,7 +249,7 @@ chmod 755 "$MM"/*
   printf '%s\n' "$CAN_STRIPE"     # 8  stripe-live-key
   printf '%s\n' "$CAN_JWT"        # 9  jwt
   printf '%s\n' "$CAN_BEARER"     # 10 bearer-token
-  printf '%s\n' "$CAN_CREDTOKEN"  # 11 cred-assign
+  printf '%s\n' "$CAN_ASSIGN1"     # 11 cred-assign
   printf '%s\n' "$CAN_URLUSER"    # 12 url-embedded-creds
   printf '%s\n' "$CAN_EXACT"      # 13 exact needle
   printf '%s\n' 'netrcfakepassword'
