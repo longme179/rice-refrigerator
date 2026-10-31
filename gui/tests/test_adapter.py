@@ -201,6 +201,28 @@ class TestParseDryRun(unittest.TestCase):
         cache = s.block("caches/junk")
         self.assertIn((".cache/", ""), cache.items)
 
+    def test_symlinks_line_parsed(self):
+        text = DRYRUN_NORMAL.replace(
+            "  TOTAL                 : 21 file(s), 3 MiB\n",
+            "  TOTAL                 : 21 file(s), 3 MiB\n"
+            "  symlinks followed    : 2 link(s) -> 18 file(s), "
+            "37.5 KiB fetched; 5 kept as link(s)\n")
+        self.assertIn("symlinks followed", text)
+        s = adapter.parse_dry_run(text)
+        self.assertTrue(s.parsed_ok)
+        self.assertEqual(s.links_followed, 2)
+        self.assertEqual(s.files_from_links, 18)
+        self.assertEqual(s.links_kept, 5)
+        # the line must NOT be mistaken for a section
+        names = {sec.name for sec in s.sections}
+        self.assertNotIn("symlinks followed", names)
+
+    def test_symlinks_line_absent_keeps_zeros(self):
+        s = adapter.parse_dry_run(DRYRUN_NORMAL)
+        self.assertEqual(s.links_followed, 0)
+        self.assertEqual(s.files_from_links, 0)
+        self.assertEqual(s.links_kept, 0)
+
     def test_real_fedora_shape(self):
         s = adapter.parse_dry_run(DRYRUN_REAL_FEDORA)
         self.assertTrue(s.parsed_ok)
@@ -337,6 +359,23 @@ class TestCommands(unittest.TestCase):
         self.assertEqual(cmd, ["bash", "/t/bin/rice-backup.sh", "--list-files",
                                "--home", "/h"])
         self.assertNotIn("--repo", cmd)
+
+    def test_follow_symlinks_default_adds_no_flag(self):
+        cmd = adapter.build_command("/t/bin/rice-backup.sh", dry_run=True)
+        self.assertNotIn("--no-follow-symlinks", cmd)
+        self.assertNotIn("--follow-outside-home", cmd)
+
+    def test_no_follow_symlinks_flag(self):
+        cmd = adapter.build_command("/t/bin/rice-backup.sh", dry_run=True,
+                                    follow_symlinks=False)
+        self.assertIn("--no-follow-symlinks", cmd)
+        self.assertNotIn("--follow-outside-home", cmd)
+
+    def test_follow_outside_home_flag(self):
+        cmd = adapter.build_command("/t/bin/rice-backup.sh", dry_run=True,
+                                    follow_outside=True)
+        self.assertIn("--follow-outside-home", cmd)
+        self.assertNotIn("--no-follow-symlinks", cmd)
 
     def test_valid_repo(self):
         self.assertTrue(adapter.valid_repo("longme/rice-refrigerator"))
@@ -585,8 +624,9 @@ class TestBackendVersion(unittest.TestCase):
     def test_toolroot_version_is_new_enough(self):
         root = adapter.default_toolroot()
         v = adapter.backend_version(root)
-        self.assertRegex(v, r"^0\.2\.\d+$")
+        self.assertRegex(v, r"^0\.\d+\.\d+$")
         self.assertTrue(adapter.backend_new_enough(root))
+        self.assertGreaterEqual(adapter.version_tuple(v), (0, 2, 0))
 
 
 if __name__ == "__main__":

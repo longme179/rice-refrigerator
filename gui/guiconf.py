@@ -66,6 +66,7 @@ DEFAULTS = {
     "repo": "",
     "home": "",
     "include_system": False,
+    "follow_symlinks": True,  # D37: fetch content of followed link targets
     "auth_mode": "auto",      # 'auto' | 'gh' | 'pat'
     "offline_last": False,    # last launch used offline export mode
     "window_width": 980,
@@ -73,7 +74,7 @@ DEFAULTS = {
     "export_dir": "",
 }
 
-_BOOL_KEYS = ("include_system",)
+_BOOL_KEYS = ("include_system", "follow_symlinks")
 _INT_KEYS = ("window_width", "window_height")
 
 

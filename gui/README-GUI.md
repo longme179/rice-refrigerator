@@ -47,11 +47,19 @@ display and is verified via the manual checklist below.
   (dotfiles, `.config`, `.local`, …). Unticked rows are written to
   `~/.config/rice-backup/selection.txt` in exactly the backend's
   `--exclude-from` format, so what you see is what the next run skips.
-  Whole unticked subtrees are stored as single directory entries.
-- **Sessions persist.** Repository, home, include-/etc, window size and the
-  tick state survive restarts (`gui.conf` + `selection.txt`, both mode 0600,
-  nothing credential-shaped — rule D27/D34). The selection file is plain text
-  and safe to edit by hand.
+  Whole unticked subtrees are stored as single directory entries. Content
+  fetched through followed symlinks appears as normal rows, so a whole
+  fetched subtree can be unticked with one click.
+- **Symlink following (D37).** "follow symlinks" in Advanced (default on,
+  persisted in the session) makes the backend fetch the content a symlink
+  points to when that content is not already inside the backup; links whose
+  targets are already backed up stay links. The dry-run summary shows the
+  counts ("Symlinks: N followed … M kept as links"); every decision is in
+  the backup's `reports/SYMLINKS.md`.
+- **Sessions persist.** Repository, home, include-/etc, symlink following,
+  window size and the tick state survive restarts (`gui.conf` +
+  `selection.txt`, both mode 0600, nothing credential-shaped — rule D27/D34).
+  The selection file is plain text and safe to edit by hand.
 - **Export an offline archive.** "Export archive…" writes a restorable
   tar.gz (the staging repo including `.git`) with **no GitHub and no PAT**
   (`--export`, D33). Restore: `tar -xzf <archive>` then

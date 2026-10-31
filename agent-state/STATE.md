@@ -284,3 +284,25 @@ over recollection. Never write secrets here.
   download/rice-backup-0.2.0.tar.gz. NEXT (user, real machine): the 10-point
   manual GUI checklist in gui/README-GUI.md; consider making the real backup
   target repo private; M3 restore GUI stays deferred (D29).
+
+## Session 8 — 2026-11-01 (symlink following, D37)
+
+## NEXT ACTION (write-ahead) — session 8, current
+- REMAINING: S4 tree+history gate -> commit -> push -> rebuild
+  download/rice-backup-0.3.0.tar.gz -> update download/README.md -> final
+  Vietnamese report. (Implementation itself is DONE and green: 356/0.)
+
+## Session-8 result log (append-only)
+- [s8] RAN bootstrap: origin/main == HEAD == 262b4b9, tree clean, /tmp/rice-auth
+  present, suite 317/0 after fixture rebuild.
+- [s8] DONE (D37 implemented, suite 356/0, contract rig ALL OK): collect.sh
+  link deferral + phase-2 resolver (deny-target/cache/coverage/overlap/
+  dedup/outside/dangling) + recursive follow walk; staging pre-clean for
+  type transitions + second tar pipe with -h for followed FILE links;
+  symlinks.tsv + reports/SYMLINKS.md + dry-run "symlinks followed" line;
+  --no-follow-symlinks / --follow-outside-home; rice-restore --relink;
+  fixtures (followed dir+file links, dup, dangling, deny-target, ancestor
+  overlap) + t25; GUI follow checkbox (persisted), adapter kwargs + summary
+  parse + 5 new tests; docs. See journal 08 for the found-and-fixed bugs
+  (ancestor duplication, report field order, link count) and the ln -s
+  sandbox block (git-blob mklink workaround, scripts outside the repo).

@@ -440,6 +440,12 @@ class SetupWindow(Gtk.ApplicationWindow):
             label="also collect the scanned /etc allowlist")
         self.include_system.set_active(bool(conf.get("include_system", False)))
         grid.attach(self.include_system, 0, 1, 2, 1)
+        self.follow_links = Gtk.CheckButton(
+            label="follow symlinks — fetch the content their targets point to "
+                  "(links whose target is already backed up stay links; "
+                  "recorded in symlinks.tsv for restore --relink)")
+        self.follow_links.set_active(bool(conf.get("follow_symlinks", True)))
+        grid.attach(self.follow_links, 0, 2, 2, 1)
         adv.set_child(grid)
         outer.append(adv)
 
@@ -502,9 +508,11 @@ class SetupWindow(Gtk.ApplicationWindow):
         app.home = home
         app.offline_mode = offline
         app.include_system = self.include_system.get_active()
+        app.follow_symlinks = self.follow_links.get_active()
         app.conf["repo"] = repo
         app.conf["home"] = home
         app.conf["include_system"] = app.include_system
+        app.conf["follow_symlinks"] = app.follow_symlinks
         app.conf["offline_last"] = offline
         app.conf["auth_mode"] = "gh" if self.radio_gh.get_active() else "pat"
         app.save_conf()
@@ -517,6 +525,7 @@ class SetupWindow(Gtk.ApplicationWindow):
             app.backend_script(), dry_run=True,
             repo=None if offline else repo, home=home,
             include_system=app.include_system,
+            follow_symlinks=app.follow_symlinks,
             export_path=(adapter.get_temp_dir() +
                          "/rice-backup-export-preview.tar.gz") if offline else None)
         env = adapter.child_env(app.pat if not offline else None)
@@ -537,7 +546,8 @@ class SetupWindow(Gtk.ApplicationWindow):
 
         argv = adapter.build_command(
             app.backend_script(), list_files=True, home=app.home,
-            include_system=app.include_system)
+            include_system=app.include_system,
+            follow_symlinks=app.follow_symlinks)
         env = adapter.child_env(None)               # offline, read-only
         win = RunWindow(app, "Candidate list", allow_cancel=False,
                         on_finished=lambda rc2, text2: self._list_done(rc2, text2))
@@ -617,6 +627,14 @@ class ReviewWindow(Gtk.ApplicationWindow):
                                                     summary.auth_mode)
         outer.append(Gtk.Label(label="<small>%s</small>" % esc(head),
                                use_markup=True, halign=Gtk.Align.START))
+        if summary.links_followed or summary.links_kept:
+            outer.append(Gtk.Label(
+                label="<small>%s</small>" % esc(
+                    "Symlinks: %d followed (%d file(s) fetched from their "
+                    "targets), %d kept as links — see reports/SYMLINKS.md"
+                    % (summary.links_followed, summary.files_from_links,
+                       summary.links_kept)),
+                use_markup=True, halign=Gtk.Align.START))
         self.header_label = Gtk.Label(label="")
         outer.append(self.header_label)
 
@@ -879,6 +897,7 @@ class ReviewWindow(Gtk.ApplicationWindow):
         return adapter.build_command(
             app.backend_script(), home=app.home,
             include_system=app.include_system,
+            follow_symlinks=app.follow_symlinks,
             exclude_from=excl, **kw)
 
     def _on_start_backup(self, _btn: Gtk.Button) -> None:
@@ -974,7 +993,8 @@ class ReviewWindow(Gtk.ApplicationWindow):
         app.summary = adapter.parse_dry_run(text)
         argv = adapter.build_command(
             app.backend_script(), list_files=True, home=app.home,
-            include_system=app.include_system)
+            include_system=app.include_system,
+            follow_symlinks=app.follow_symlinks)
         env = adapter.child_env(None)
         win = RunWindow(app, "Candidate list (refresh)", allow_cancel=False,
                         on_finished=self._refresh_list_done)
@@ -1118,6 +1138,7 @@ class RiceGuiApp(Gtk.Application):
         self.home = self.conf.get("home", "") or os.path.expanduser("~")
         self.offline_mode = bool(self.conf.get("offline_last", False))
         self.include_system = bool(self.conf.get("include_system", False))
+        self.follow_symlinks = bool(self.conf.get("follow_symlinks", True))
         self.summary = None
         self.entries: list = []
         self.windows: dict = {}

@@ -207,3 +207,33 @@ Format: [DECISION] / [ASSUMPTION] with ID, date, reason.
   that tick/skip exists. GTK 4.6+ is the compatibility floor (Ubuntu 22.04 LTS
   OK); no 4.10-only APIs. Backend prompts are read from raw stderr chunks
   because they end WITHOUT a newline (LineAssembler + partial detection).
+- [DECISION] D37 2026-11-01 — SYMLINK FOLLOWING (user report: repo contained only the
+  link blob for home/.config/quickshell/lme-shell while the real target directory was
+  never fetched). Root cause: `find` never descends into symlinked dirs (only the link
+  entry is collected) and staging tar runs without -h (links stored as link blobs).
+  New behavior, ON by default, `--no-follow-symlinks` restores the old one:
+  1) links whose canonical target is ALREADY covered by the backup itself (target is
+     one of RICE_HOME_FILES or lives under an include root, or lives inside an
+     already-followed target) stay symlink blobs — the content is in the repo anyway
+     and the link round-trips (existing t06/t07/t15 semantics are CORRECT for these);
+  2) links whose target is under $HOME but NOT covered are followed: the target
+     directory/file content is fetched under the LINK path (repo becomes
+     self-contained), and the original link is recorded in symlinks.tsv +
+     reports/SYMLINKS.md so `rice-restore.sh --relink` can recreate the layout;
+  3) a link whose target (under $HOME) is deny-listed or cache-junk EXCLUDES the link
+     (rule reported) — a symlink can never bypass L1/L3;
+  4) targets OUTSIDE $HOME are not followed without `--follow-outside-home` (kept as
+     link + note) so an accidental link to / or /usr cannot explode the walk;
+  5) duplicate targets (two links, one canonical real) dedup: the second link stays
+     a link; cycles are impossible by construction (canonical SEEN_REAL + coverage);
+  6) every other layer applies unchanged to the VIRTUAL paths: deny globs, cache
+     skip, 50 MiB per-file cap, L2 content scan (reads real content through the
+     link), --exclude-from selection (an ancestor entry skips a whole fetched
+     subtree), 1 GiB budget. Followed FILE links are staged via a second tar pipe
+     with -h; followed DIR content lands through normal path resolution.
+  7) staging pre-cleans type transitions (stale dir at a file/link path and vice
+     versa, stale link at an ancestor path) so re-runs flip cleanly between layouts.
+  rice-restore gains `--relink`: after an apply restore, each followed link's content
+  is moved to its recorded (relative) target location under the target home and the
+  symlink is recreated; targets that would land outside the target home are LISTED,
+  never guessed (same philosophy as UNMAPPED.txt).

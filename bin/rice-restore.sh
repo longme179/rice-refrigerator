@@ -33,6 +33,7 @@ ALL_SECTIONS=0
 LIST_ONLY=0
 TARGET_HOME="${HOME}"
 SKIP_VERIFY=0
+RELINK=0
 
 usage() {
   cat <<'USAGE'
@@ -48,6 +49,13 @@ usage: rice-restore.sh --from URL [options]
   --list-sections     print the sections found in the backup and exit
   --home DIR          restore into DIR instead of $HOME
   --skip-verify       skip the manifest sha256 verification
+  --relink            after restoring, recreate the symlink layout recorded
+                      in the backup's symlinks.tsv: each followed link's
+                      content moves to its recorded target location (inside
+                      this home only) and the symlink is recreated. Links whose
+                      target would land outside the home are LISTED, never
+                      guessed. A dry-run only previews the relink plan
+                      guessed. On dry-run the relink plan is only previewed
 
 sections: dotfiles config systemd-user local-bin applications fonts
           icons-themes gnome-extensions kde gnome-dconf crontab packages system
@@ -65,6 +73,7 @@ while [ $# -gt 0 ]; do
     --list-sections) LIST_ONLY=1; shift ;;
     --home) [ $# -ge 2 ] || usage 2; TARGET_HOME=$2; shift 2 ;;
     --skip-verify) SKIP_VERIFY=1; shift ;;
+    --relink) RELINK=1; shift ;;
     -h|--help) usage 0 ;;
     --) shift; break ;;
     *) printf 'unknown option: %s\n' "$1" >&2; usage 2 ;;
@@ -227,6 +236,16 @@ done
 [ -f meta/systemd-user-enabled.txt ] \
   && printf '  systemd-user     enabled units list: meta/systemd-user-enabled.txt\n'
 
+# relink preview (D37): what --relink would recreate from symlinks.tsv
+if [ "$RELINK" -eq 1 ] && [ -f symlinks.tsv ]; then
+  RELINK_N=$(grep -vc '^#' symlinks.tsv || true)
+  printf '\nrelink: %s followed link(s) recorded in symlinks.tsv; with --apply\n' "$RELINK_N"
+  printf 'their content moves to the recorded target locations and the links are\n'
+  printf 'recreated (only targets inside this home; others are listed):\n'
+  awk -F'\t' '$1 !~ /^#/ {print "  " $1 " -> " $2}' symlinks.tsv | head -15
+  [ "${RELINK_N:-0}" -gt 15 ] && printf '  ... and %s more\n' "$((RELINK_N - 15))"
+fi
+
 # package reinstall preview (generated into the temp workdir, never the
 # target home, so the dry run stays a pure no-op)
 if [ "$MODE" = "dry-run" ]; then
@@ -344,4 +363,9 @@ fi
 printf '\nrestore complete.\n'
 printf '  pre-existing files saved under: %s\n' "$BACKUP_DIR"
 [ -d "$GENERATED_DIR" ] && printf '  generated review scripts in: %s\n' "$GENERATED_DIR"
+
+# relink last (D37): only after the home content is in place
+if [ "$RELINK" -eq 1 ]; then
+  rice_restore_relink
+fi
 exit 0

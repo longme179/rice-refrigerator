@@ -201,3 +201,60 @@ rice_restore_system() {
     "$(find "$gen/system-etc" -type f 2>/dev/null | wc -l)" "$gen/root-actions.sh"
   return 0
 }
+
+# Recreate the symlink layout recorded by rice-backup (D37, symlinks.tsv).
+# Runs inside the cloned repo cwd, AFTER the home sections were restored: for
+# every FOLLOWED link, the restored real content moves to the link's recorded
+# target location (only when that lands INSIDE the target home) and the
+# original symlink is recreated at the link path. Anything that would land
+# outside the target home is LISTED in relink-manual.txt, never guessed
+# (same philosophy as UNMAPPED.txt). Never runs on dry-run.
+rice_restore_relink() {
+  if [ ! -f symlinks.tsv ]; then
+    rice_info "relink: this backup has no symlinks.tsv (nothing to relink)"
+    return 0
+  fi
+  local gen="$GENERATED_DIR"
+  mkdir -p -- "$gen"
+  local manual="$gen/relink-manual.txt"
+  printf '# Links recorded by rice-backup that could NOT be recreated here\n' > "$manual"
+  printf '# rel\traw_target\treason\n' >> "$manual"
+  local rel raw _real kind _n _b dirbase dest n=0 m=0
+  while IFS=$'\t' read -r rel raw _real kind _n _b; do
+    case "$rel" in '#'*) continue ;; esac
+    [ -n "$rel" ] || continue
+    dirbase=$(dirname -- "$rel")
+    # resolve the RAW target against the link's new location (relative raw
+    # keeps working because the same relative geometry is recreated)
+    dest=""
+    case "$raw" in
+      /*) dest=$raw ;;
+      *)  dest=$(cd -- "$TARGET_HOME/$dirbase" 2>/dev/null \
+             && printf '%s/%s' "$(pwd -P)" "$raw" || true) ;;
+    esac
+    if [ -z "$dest" ] || [ "$dest" = "$TARGET_HOME" ] \
+       || [ "${dest#"$TARGET_HOME"/}" = "$dest" ]; then
+      printf '%s\t%s\t%s\n' "$rel" "$raw" "target outside the target home" >> "$manual"
+      m=$((m + 1)); continue
+    fi
+    if [ "$dest" = "$TARGET_HOME/$rel" ] || [ "${dest#"$TARGET_HOME/$rel"/}" != "$dest" ]; then
+      printf '%s\t%s\t%s\n' "$rel" "$raw" "target is the link path itself" >> "$manual"
+      m=$((m + 1)); continue
+    fi
+    if [ ! -e "$TARGET_HOME/$rel" ] && [ ! -L "$TARGET_HOME/$rel" ]; then
+      printf '%s\t%s\t%s\n' "$rel" "$raw" "restored content not found (restore the home sections first)" >> "$manual"
+      m=$((m + 1)); continue
+    fi
+    backup_existing "$dest"
+    mkdir -p -- "$(dirname -- "$dest")"
+    if mv -- "$TARGET_HOME/$rel" "$dest" 2>/dev/null; then
+      ln -sfn -- "$raw" "$TARGET_HOME/$rel"
+      n=$((n + 1))
+    else
+      printf '%s\t%s\t%s\n' "$rel" "$raw" "move failed" >> "$manual"
+      m=$((m + 1))
+    fi
+  done < symlinks.tsv
+  printf '[rice-backup] relink: %s link(s) recreated, %s listed in %s\n' "$n" "$m" "$manual"
+  return 0
+}

@@ -48,6 +48,8 @@ ALLOW_OVERSIZE=0
 EXCLUDE_FROM=""
 EXPORT_PATH=""
 LIST_FILES=0
+RICE_FOLLOW=1                 # D37: follow symlinks (0 with --no-follow-symlinks)
+RICE_FOLLOW_OUTSIDE=0         # D37: also follow targets outside home
 RICE_HOME="${HOME}"
 REPO_ARG="${RICE_REPO:-}"
 
@@ -76,6 +78,13 @@ usage: rice-backup.sh [options]
                       "path<TAB>bytes" line per file) and exit: offline,
                       read-only, no auth. Machine-readable view the GUI builds
                       its tick/skip checklist from
+  --no-follow-symlinks  store symlinks as links only (pre-0.3.0 behavior);
+                      by default links whose target is NOT already inside the
+                      backup are followed: the target's content is fetched
+                      into the repo and the original link is recorded in
+                      symlinks.tsv (restore it later with rice-restore --relink)
+  --follow-outside-home  also follow symlink targets that live outside $HOME
+                      (default: those links are kept as links and reported)
   restore ...         run the matching restore tool
   -h, --help          this help
 
@@ -100,6 +109,8 @@ while [ $# -gt 0 ]; do
     --exclude-from) [ $# -ge 2 ] || usage 2; EXCLUDE_FROM=$2; shift 2 ;;
     --export) [ $# -ge 2 ] || usage 2; EXPORT_PATH=$2; shift 2 ;;
     --list-files) LIST_FILES=1; shift ;;
+    --no-follow-symlinks) RICE_FOLLOW=0; shift ;;
+    --follow-outside-home) RICE_FOLLOW_OUTSIDE=1; shift ;;
     -h|--help) usage 0 ;;
     --) shift; break ;;
     *) printf 'unknown option: %s\n' "$1" >&2; usage 2 ;;
@@ -278,6 +289,16 @@ printf '  desktop settings      : dconf dump (%s), crontab (%s)\n' \
   "$(rice_have dconf && printf 'available' || printf 'unavailable')" \
   "$(rice_have crontab && printf 'available' || printf 'unavailable')"
 printf '  TOTAL                 : %s file(s), %s\n' "${#RICE_INCLUDE[@]}" "$(rice_hr_size "$RICE_TOTAL_BYTES")"
+if [ ${#RICE_LINKS[@]} -gt 0 ] || [ ${#RICE_LINK_STATUS[@]} -gt 0 ]; then
+  LINK_N=0 LINK_FILES=0 LINK_BYTES=0
+  for LREC in "${RICE_LINKS[@]}"; do
+    LINK_N=$((LINK_N + 1))
+    LB=$(printf '%s' "$LREC" | cut -f5); LINK_FILES=$((LINK_FILES + ${LB:-0}))
+    LB=$(printf '%s' "$LREC" | cut -f6); LINK_BYTES=$((LINK_BYTES + ${LB:-0}))
+  done
+  printf '  symlinks followed    : %s link(s) -> %s file(s), %s fetched; %s kept as link(s)\n' \
+    "$LINK_N" "$LINK_FILES" "$(rice_hr_size "$LINK_BYTES")" "${#RICE_LINK_STATUS[@]}"
+fi
 SHOWN=0
 for p in "${RICE_INCLUDE[@]}"; do
   if [ "$SHOWN" -lt 40 ]; then printf '    %s\n' "$p"; fi
@@ -389,14 +410,16 @@ else
   echo "# systemctl not available" > "$RICE_STAGE/meta/systemd-user-enabled.txt"
 fi
 {
-  printf 'files=%s bytes=%s denied=%s scanhits=%s big=%s caches=%s\n' \
+  printf 'files=%s bytes=%s denied=%s scanhits=%s big=%s caches=%s links_followed=%s links_kept=%s\n' \
     "${#RICE_INCLUDE[@]}" "$RICE_TOTAL_BYTES" "${#RICE_DENIED[@]}" \
-    "${#RICE_SCANHITS[@]}" "${#RICE_SKIPPED_BIG[@]}" "${#RICE_SKIPPED_CACHE[@]}"
+    "${#RICE_SCANHITS[@]}" "${#RICE_SKIPPED_BIG[@]}" "${#RICE_SKIPPED_CACHE[@]}" \
+    "${#RICE_LINKS[@]}" "${#RICE_LINK_STATUS[@]}"
 } > "$RICE_STAGE/meta/counts.txt"
 
-# reports + manifest + restore note
+# reports + manifest + symlink records + restore note
 mkdir -p "$RICE_STAGE/reports"
 rice_write_reports "$RICE_STAGE"
+rice_write_symlinks "$RICE_STAGE"
 rice_make_manifest "$RICE_STAGE"
 if [ -n "$EXPORT_PATH" ]; then
   cat > "$RICE_STAGE/RESTORE.md" <<'EOF'

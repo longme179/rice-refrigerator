@@ -52,6 +52,14 @@ PEM_OSSH_FTR="-----END OPENSSH PRIVATE ""KEY-----"
 rm -rf "$H" "$HERE/mocks" "$HERE/mocks-min"
 cp -a "$CLEAN" "$H"
 
+# Re-assert the fixture modes git cannot carry (git tracks only the exec bit,
+# so a fresh clone / extracted tarball yields 644/755): private.conf must be
+# 600 and myscript 755 for t06/t07/t15 mode round-trip assertions to hold
+# EVERYWHERE (working tree, fresh clone, release tarball).
+chmod 600 "$H/.config/myapp/private.conf"
+chmod 755 "$H/.local/bin/myscript"
+find "$H" -type f -perm -g+w -exec chmod g-w {} + 2>/dev/null || true
+
 # ----------------------------- inject content-scan canaries (L2, all FAKE)
 mkdir -p "$H/.config/weird" "$H/.config/cloud" "$H/.config/chat" "$H/.config/pay" \
   "$H/.config/api" "$H/.config/creds" "$H/.config/net" "$H/.config/misc" "$H/.config/gh" \

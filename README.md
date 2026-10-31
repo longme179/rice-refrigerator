@@ -92,6 +92,7 @@ it (e.g. into a password manager or an unreferenced include), and re-run.
                      [--repo OWNER/NAME] [--home DIR] [--keep-stage]
                      [--allow-oversize] [--exclude-from FILE]
                      [--export FILE.tar.gz] [--list-files]
+                     [--no-follow-symlinks] [--follow-outside-home]
 ```
 
 | option | effect |
@@ -106,6 +107,8 @@ it (e.g. into a password manager or an unreferenced include), and re-run.
 | `--exclude-from FILE` | **selection** — skip the home-relative paths listed in `FILE` (one per line, `#` comments; a directory entry skips its whole subtree). See below. |
 | `--export FILE.tar.gz` | **offline archive** — write a restorable tar.gz instead of pushing. No GitHub, no PAT. See below. |
 | `--list-files` | print the post-exclusion candidate list (`path<TAB>bytes` per line) and exit — offline and read-only; what the GUI builds its checklist from |
+| `--no-follow-symlinks` | store symlinks as link entries only (pre-0.3.0 behavior). By default symlinks whose target is **not already inside the backup** are followed — see below. |
+| `--follow-outside-home` | also follow symlink targets that live outside `$HOME` (default: those links are kept as links and reported) |
 
 Authentication (in order of preference):
 
@@ -166,6 +169,41 @@ works unchanged. If you want both a GitHub backup *and* an archive, run the
 tool twice (once without `--export`, once with it) — each run creates its own
 commit.
 
+### Symlinks (`--no-follow-symlinks`, `--follow-outside-home`)
+
+Dotfiles are full of symlinks — a shell config that is a link into a dotfiles
+repo, `.config/quickshell/lme-shell -> ~/dev/lme-shell`, systemd
+`*.wants/` links. Up to 0.2.0 such links were stored **as link entries only**:
+the repository referenced the target without containing its content, so a
+restore onto a fresh machine left you with dangling links. Since 0.3.0 the
+default is to **follow** them, with one rule deciding per link:
+
+| the link points to... | what happens |
+|---|---|
+| content the backup already collects (e.g. `.vimrc -> .config/vim/vimrc`, or anything under an include root) | kept as a symlink — the content is in the repo anyway and the link round-trips exactly |
+| a directory/file under `$HOME` that is **not** otherwise collected | **followed**: the target's content is fetched into the repo at the link's path, and the original link is recorded in `symlinks.tsv` + `reports/SYMLINKS.md` |
+| a deny-listed or cache/junk target | the link itself is **excluded** (`deny-target:` rule in EXCLUDED.md) — a symlink can never bypass the deny list |
+| outside `$HOME` | kept as a link and reported; follow only with `--follow-outside-home` |
+| a dangling link, a duplicate of an already-followed target, or a target that would re-walk already-collected regions | kept as a link, reason in `reports/SYMLINKS.md` |
+
+Every other layer applies to the fetched content unchanged: the deny globs,
+cache skip, the 50 MiB per-file cap, the content scan (it reads the real
+bytes through the link), the `--exclude-from` selection (unticking
+`.config/quickshell/lme-shell` skips the whole fetched subtree) and the 1 GiB
+budget. `--no-follow-symlinks` restores the old store-links-only behavior.
+
+After a restore, `--relink` recreates the original layout from
+`symlinks.tsv`:
+
+```sh
+./bin/rice-restore.sh --from URL --apply --all-sections --relink
+```
+
+For every followed link the restored content moves to its recorded target
+location (only when that lands inside the target home) and the symlink is
+recreated; anything that would land outside the home is listed in
+`relink-manual.txt`, never guessed.
+
 ## Graphical interface (optional)
 
 A point-and-click frontend lives in `gui/` (Python + PyGObject/GTK4): setup →
@@ -180,6 +218,7 @@ command when PyGObject is missing. See `gui/README-GUI.md`.
 ```sh
 ./bin/rice-restore.sh --from URL [--dry-run|--apply] [--section NAME]...
                       [--all-sections] [--list-sections] [--home DIR]
+                      [--skip-verify] [--relink]
 ```
 
 - **Dry-run is the default** — even without a flag nothing changes until you
@@ -203,6 +242,8 @@ command when PyGObject is missing. See `gui/README-GUI.md`.
 - `dconf` settings are loaded with `dconf load` (current state saved first);
   the crontab is installed with `crontab` (previous one saved first); systemd
   user units are copied and the enable commands are printed.
+- `--relink` (after the home sections) recreates the symlink layout recorded
+  in the backup's `symlinks.tsv` — see *Symlinks* above.
 
 ## Rotating the PAT
 

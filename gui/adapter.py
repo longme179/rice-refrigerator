@@ -16,8 +16,9 @@ plus the session-7 additions D32/D33):
 NO gtk imports in this module: it stays importable and unit-testable headless
 (C5/D24). gui_app.py owns all widgets.
 
-Backend contract: rice-backup >= 0.2.0 (needs --exclude-from / --export /
---list-files). backend_version() parses the version for the startup check.
+Backend contract: rice-backup >= 0.3.0 (needs --exclude-from / --export /
+--list-files / symlink following D37). backend_version() parses the version
+for the startup check.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from typing import Iterable, List, Optional, Sequence, Set, Tuple
 # version / toolroot helpers
 # --------------------------------------------------------------------------
 
-MIN_BACKEND_VERSION = "0.2.0"
+MIN_BACKEND_VERSION = "0.3.0"
 
 
 def default_toolroot() -> Path:
@@ -117,6 +118,9 @@ class DryRunSummary:
     excluded: List[ExcludedBlock] = field(default_factory=list)
     over_budget: bool = False
     export_mode: bool = False
+    links_followed: int = 0      # D37: links whose target content was fetched
+    files_from_links: int = 0    # files fetched through followed links
+    links_kept: int = 0          # links stored as links
     parsed_ok: bool = False
     raw: str = ""
 
@@ -146,6 +150,10 @@ EXCL_ITEM_RULE_RE = re.compile(r"^ {4}- (.+?) \[([^\]]+)\]$")
 EXCL_ITEM_SIZE_RE = re.compile(r"^ {4}- (.+?) \(([0-9.]+\s*(?:B|KiB|MiB|GiB))\)$")
 EXCL_ITEM_PLAIN_RE = re.compile(r"^ {4}- (.+)$")
 OVER_BUDGET_MARK = "a real run needs --allow-oversize"
+SYMLINKS_RE = re.compile(
+    r"^  symlinks followed\s*:\s*(\d+) link\(s\) -> (\d+) file\(s\),.*?;\s*"
+    r"(\d+) kept as link\(s\)\s*$"
+)
 
 
 def parse_dry_run(text: str) -> DryRunSummary:
@@ -212,6 +220,12 @@ def parse_dry_run(text: str) -> DryRunSummary:
         m = HOME_RE.match(line)
         if m:
             s.home = m.group(1).strip()
+            continue
+        m = SYMLINKS_RE.match(line)
+        if m:
+            s.links_followed = int(m.group(1))
+            s.files_from_links = int(m.group(2))
+            s.links_kept = int(m.group(3))
             continue
         m = DISTRO_RE.match(line)
         if m:
@@ -347,6 +361,8 @@ def build_command(
     exclude_from: Optional[Path | str] = None,
     export_path: Optional[Path | str] = None,
     list_files: bool = False,
+    follow_symlinks: bool = True,
+    follow_outside: bool = False,
 ) -> List[str]:
     args: List[str] = ["bash", str(script)]
     if list_files:
@@ -357,6 +373,10 @@ def build_command(
         args.append("--yes")
     if include_system:
         args.append("--include-system")
+    if not follow_symlinks:                    # D37: default is follow
+        args.append("--no-follow-symlinks")
+    if follow_outside:
+        args.append("--follow-outside-home")
     if repo and not export_path and not list_files:
         args += ["--repo", repo]
     if home:

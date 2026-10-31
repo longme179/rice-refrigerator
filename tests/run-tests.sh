@@ -712,9 +712,80 @@ t24() { # D28+: GUI adapter/guiconf headless unit tests (no PyGObject needed)
   rm -rf "$ROOT/gui/__pycache__" "$ROOT/gui/tests/__pycache__" 2>/dev/null || true
 }
 
+t25() { # D37 symlink following: fetch target content, coverage, deny-target,
+        # dedup/overlap links, --no-follow-symlinks and restore --relink
+  TW=$SUITE/t25; mkdir -p "$TW/home"; make_home "$TW/home"; make_remote test/backup
+  setup_env fedora
+  # dry-run: followed links fetch content; summary line present
+  out=$(backup --home "$TW/home" --repo test/backup --dry-run); rc=$?
+  assert_rc "t25 dry-run rc" "$rc" 0
+  assert_match "t25 summary has symlinks line" "$out" "symlinks followed    : 2 link(s) -> "
+  assert_match "t25 fetched dir content listed" "$out" "    .config/quickshell/lme-shell/config.kdl"
+  assert_match "t25 fetched file-link listed" "$out" "    .config/app.conf"
+  assert_no_match "t25 target dir never listed directly" "$out" "    dev/lme-shell/config.kdl"
+  assert_no_match "t25 deny-target link not in upload list" "$out" "    .config/mozilla-link"
+  assert_match "t25 deny-target rule reported" "$out" "deny-target:deny-dir:.mozilla"
+  # real run: repo carries CONTENT at the link path + symlinks.tsv + report
+  backup --home "$TW/home" --repo test/backup --yes >/dev/null 2>&1
+  git clone -q "$TW/remote-base/test/backup.git" "$TW/clone"
+  assert_is_link "t25 covered link stays a link (.vimrc)" "$TW/clone/home/.vimrc"
+  assert_file "t25 followed dir content in repo" "$TW/clone/home/.config/quickshell/lme-shell/config.kdl"
+  [ -d "$TW/clone/home/.config/quickshell/lme-shell" ] \
+    && [ ! -L "$TW/clone/home/.config/quickshell/lme-shell" ] \
+    && ok "t25 followed link is a real dir in the repo" \
+    || bad "t25 followed link is a real dir in the repo"
+  assert_file "t25 file-link content in repo" "$TW/clone/home/.config/app.conf"
+  assert_file_match "t25 file-link content matches target" "$TW/clone/home/.config/app.conf" "app settings fixture"
+  assert_is_link "t25 dangling link preserved" "$TW/clone/home/.config/broken-link"
+  assert_is_link "t25 duplicate-target link kept as link" "$TW/clone/home/.config/quickshell/lme-shell-2"
+  assert_is_link "t25 ancestor-overlap link kept as link" "$TW/clone/home/.config/quickshell/lme-shell/inner/up"
+  assert_nofile "t25 deny-target link absent from repo" "$TW/clone/home/.config/mozilla-link"
+  assert_file "t25 symlinks.tsv in repo" "$TW/clone/symlinks.tsv"
+  assert_file_match "t25 symlinks.tsv dir row" "$TW/clone/symlinks.tsv" ".config/quickshell/lme-shell"$'	'"../../dev/lme-shell"
+  assert_file_match "t25 symlinks.tsv file row" "$TW/clone/symlinks.tsv" ".config/app.conf"$'	'"../confs/app.conf"
+  assert_file_match "t25 SYMLINKS.md followed section" "$TW/clone/reports/SYMLINKS.md" "Followed"
+  assert_file_match "t25 SYMLINKS.md kept section" "$TW/clone/reports/SYMLINKS.md" "Kept as symlinks"
+  M=$(awk -F'\t' '$6=="home/.config/app.conf"{print $4}' "$TW/clone/manifest.tsv")
+  assert_eq "t25 manifest type f for fetched file link" "$M" "f"
+  # --list-files shows the fetched virtual rows (GUI tick/skip contract)
+  out=$(backup --home "$TW/home" --list-files)
+  assert_match "t25 list-files has virtual row" "$out" ".config/quickshell/lme-shell/config.kdl"
+  # user selection can skip a whole fetched subtree (ancestor prefix match)
+  printf '.config/quickshell/lme-shell\n' > "$TW/sel.txt"
+  out=$(backup --home "$TW/home" --repo test/backup --dry-run --exclude-from "$TW/sel.txt")
+  assert_no_match "t25 selection removes fetched subtree" "$out" "    .config/quickshell/lme-shell/config.kdl"
+  # --no-follow-symlinks on the SAME repo: links replace fetched dirs (also
+  # exercises the staging type-transition pre-clean)
+  out=$(backup --home "$TW/home" --repo test/backup --yes --no-follow-symlinks); rc=$?
+  assert_rc "t25 no-follow run rc" "$rc" 0
+  rm -rf "$TW/clone2"
+  git clone -q "$TW/remote-base/test/backup.git" "$TW/clone2"
+  assert_is_link "t25 no-follow keeps link only" "$TW/clone2/home/.config/quickshell/lme-shell"
+  assert_nofile "t25 no-follow child absent" "$TW/clone2/home/.config/quickshell/lme-shell/config.kdl"
+  assert_is_link "t25 no-follow file link kept" "$TW/clone2/home/.config/app.conf"
+  # restore --relink: preview on dry-run, layout recreated on apply
+  make_remote test/backup2
+  backup --home "$TW/home" --repo test/backup2 --yes >/dev/null 2>&1
+  mkdir -p "$TW/rh"
+  out=$(restore --from "file://$TW/remote-base/test/backup2.git" --home "$TW/rh" --dry-run --relink); rc=$?
+  assert_rc "t25 relink dry-run rc" "$rc" 0
+  assert_match "t25 relink preview line" "$out" "relink: 2 followed link(s)"
+  assert_nofile "t25 relink dry-run changed nothing" "$TW/rh/dev"
+  mkdir -p "$TW/rh2"
+  out=$(restore --from "file://$TW/remote-base/test/backup2.git" --home "$TW/rh2" --apply --all-sections --relink); rc=$?
+  assert_rc "t25 relink apply rc" "$rc" 0
+  assert_match "t25 relink count line" "$out" "relink: 2 link(s) recreated"
+  assert_is_link "t25 relinked dir link" "$TW/rh2/.config/quickshell/lme-shell"
+  assert_eq "t25 relinked dir raw target" "$(readlink "$TW/rh2/.config/quickshell/lme-shell")" "../../dev/lme-shell"
+  assert_file "t25 relinked dir target content" "$TW/rh2/dev/lme-shell/config.kdl"
+  assert_is_link "t25 relinked file link" "$TW/rh2/.config/app.conf"
+  assert_file "t25 relinked file target content" "$TW/rh2/confs/app.conf"
+  canaries_absent "t25 restored home (content came through the follow)"
+}
+
 # --------------------------------------------------------------------- runner
 printf 'rice-backup acceptance suite\n  root: %s\n  work: %s\n\n' "$ROOT" "$SUITE"
-TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23 t24"
+TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23 t24 t25"
 for t in $TESTS; do
   printf '%s\n' "-- $t"
   ( "$t" ) || true
