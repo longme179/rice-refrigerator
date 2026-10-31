@@ -338,3 +338,30 @@ over recollection. Never write secrets here.
   and symlinks.tsv after the run; restore-side `--relink` recreates the layout;
   consider making the backup target repo private; GUI manual checklist in
   gui/README-GUI.md; M3 restore GUI stays deferred (D29).
+
+## Session 8 — closure record (final, this commit)
+- [s8] RAN post-commit closure: deliverable tarball REBUILT from the records
+  commit 4ab032e (101 files) and the full suite re-run FROM THE TARBALL →
+  **356/0** (log /tmp/vfsuite.log); download/README.md re-read and verified
+  accurate for 0.3.0 (symlink following, --relink, GUI checkbox, test counts);
+  tarball provenance confirmed (journal md5 in tarball == repo HEAD). Final
+  Vietnamese report delivered to the user.
+- [s8] SESSION CLOSED FOR REAL. Durable state: origin/main = 4ab032e + this
+  closure commit; suite 356/0 (tree, fresh clone equivalent AND tarball);
+  S4 gates clean with exact-needle ON (tree unexpected=0; history = the two
+  documented Phase-0 PLAN.md phrases; 0 exact hits with the real PAT).
+
+## NEXT SESSION bootstrap (when the user returns)
+1. Standard four checks (see "Checks to re-run" above). Expected: origin/main
+   == HEAD == the session-8 closure commit, tree clean, suite 356/0, S4 clean.
+   If /tmp/rice-auth lost .pat/env.sh (sandbox recycle) → pushing will need the
+   user's PAT again (S3: ask and wait; NEVER search the filesystem).
+2. EXPECTED USER INPUT: results of the real-machine 0.3.0 re-run — the
+   `symlinks followed : N link(s) -> M file(s)` dry-run line, whether
+   home/.config/quickshell/lme-shell now carries real content in the repo,
+   reports/SYMLINKS.md sanity, and the 10-point GUI manual checklist.
+3. Candidate work depending on feedback: fix any real-machine symlink/report
+   findings; GUI M3 restore frontend stays deferred (D29) until a real backup
+   exists to restore from; revisit the 1 scan hit from the user's first real
+   run (.config/mango/scripts/networks.py — user was to inspect it); remind
+   about the still-public target repo if still public.
