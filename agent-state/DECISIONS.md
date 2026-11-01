@@ -237,3 +237,41 @@ Format: [DECISION] / [ASSUMPTION] with ID, date, reason.
   is moved to its recorded (relative) target location under the target home and the
   symlink is recreated; targets that would land outside the target home are LISTED,
   never guessed (same philosophy as UNMAPPED.txt).
+- [DECISION] D38 2026-11-01 — RULES FILE `~/.config/rice-backup/rules.conf` (user design
+  round, all recommended options chosen): plain INI-ish, 0600, sections [include-file]
+  [include-dir] [skip-dir] [allow] [ack-scan] [size]; home-relative entries, # comments,
+  absolute/`..` rejected, unmatched entries warn. Precedence CLI flag > file > built-in
+  (one documented exception: RICE_TOTAL_MAX_BYTES env still wins for back-compat);
+  `--rules FILE` / `RICE_RULES` / `--no-rules` control loading. CLI and GUI read/write
+  the SAME file (single source of truth). Canonical detail: RULES-PLAN.md.
+- [DECISION] D39 2026-11-01 — INCLUDE-ROOT customization: [include-file] adds top-level
+  home files (RICE_HOME_FILES semantics), [include-dir] adds walked roots
+  (RICE_HOME_DIRS semantics incl. D37 coverage/overlap), [skip-dir] REMOVES a default
+  root from the walk entirely (cheaper than post-walk exclusion); repeatable CLI flags
+  mirror each. New roots must stay under $HOME; a hard-core root is refused with its
+  rule. All other layers apply unchanged inside new roots.
+- [DECISION] D40 2026-11-01 — ALLOW-LIST + HARD CORE (broad variant, user-chosen):
+  L1 entries split hard/soft. HARD (never overridable, enforced inside
+  rice_deny_rule_for): key/secret stores, cloud CLIs, ALL browser profiles, all
+  messengers/mail, and the key-material globs (*.key *.pem *.p12 *.pfx *.kdb* id_*).
+  SOFT (overridable via [allow], subtree match): histories, .env family, *.tfstate,
+  Code/User/globalStorage. Allowed items re-enter the normal candidate path (L3/size/
+  scan still apply) and are recorded in RICE_ALLOWED -> reports/ALLOWED.md + dry-run
+  line "deny overridden". Hard-core allow attempts are REFUSED naming the rule.
+- [DECISION] D41 2026-11-01 — SCAN ACK with rails: [ack-scan] entries are exact
+  home-relative FILES. ACKABLE rules: cred-assign, bearer-token, url-embedded-creds,
+  aws-secret-label (heuristics that over-match). NEVER ackable: gh-classic,
+  gh-fine-grained, private-key, aws-access-key, google-api-key, slack-token,
+  stripe-live-key, jwt, and always `exact`. Acked files stay candidates, recorded in
+  RICE_SCAN_ACKED -> reports/ACKNOWLEDGED.md (rule name only, never values). The run
+  generates meta/scan-acks.expect (home/-prefixed paths) and passes it via the
+  scanner's --expect to rice_stage_finish AND the pre-push hook; the scanner already
+  refuses to expect exact-rule hits, so the real-PAT needle can never ride an ack.
+- [DECISION] D42 2026-11-01 — SIZES + DIAGNOSTICS: --file-cap (default 50 MiB, values
+  above 100 MiB refused per GitHub) and --budget (+ [size] section) make the caps
+  configurable. --explain [PATH...] (offline, read-only, exit 0) prints a per-path
+  verdict chain (verdict/layer/rule/override) or dumps all buckets with reasons —
+  stable format for GUI+tests. --show-rules dumps the effective merged rule set with
+  per-entry source (default/rules.conf/flag) and hard/soft marks. Milestones R1
+  (diagnostics) -> R2 (rules.conf+roots+sizes, v0.4.0) -> R3 (allow) -> R4 (ack) ->
+  R5 (GUI Rules tab + explain view); each: suite green -> S4 -> commit -> push.

@@ -351,6 +351,33 @@ over recollection. Never write secrets here.
   S4 gates clean with exact-needle ON (tree unexpected=0; history = the two
   documented Phase-0 PLAN.md phrases; 0 exact hits with the real PAT).
 
+## Session 9 — 2026-11-01 (deep customization: D38–D42 planned, then R1–R5)
+
+## NEXT ACTION (write-ahead) — session 9, current
+1. Plan docs: RULES-PLAN.md + DECISIONS D38–D42 + journal 09 + this section;
+   S4 gate; commit; push.
+2. R1 diagnostics (no behavior change): rice_show_rules + rice_explain in
+   lib/collect.sh; --explain/--show-rules in bin/rice-backup.sh (offline,
+   read-only); tests t26; green -> S4 -> commit -> push.
+3. R2 rules.conf + include/skip roots + size flags (--rules/--no-rules,
+   version 0.4.0); t27. R3 [allow] + hard core + ALLOWED.md; t28.
+   R4 [ack-scan] + expect flow + hook + ACKNOWLEDGED.md; t29.
+4. R5 GUI Rules tab + explain view + docs + 0.4.0 tarball into download/.
+5. Each milestone: suite green -> S4 tree+range -> commit -> push -> journal 09
+   result log updated. If the context runs out, the journal's NEXT ACTION is
+   the resume point (D31 discipline).
+
+## Session-9 result log (append-only)
+- [s9] RAN bootstrap: main == origin/main == a77a1b5, tree clean; fixtures
+  rebuilt; suite 356/0. /tmp/rice-auth gone (recycle) -> PAT re-materialized
+  per S2 from the user's message in THIS conversation (never echoed).
+- [s9] RAN code survey of lib/collect.sh + bin/rice-backup.sh (journal 09):
+  L1 name-based deny with no override; L2 hard-block; fixed roots; hardcoded
+  caps; reasons already attributed everywhere.
+- [s9] RAN the 6-question design round: hard core BROAD; ack WITH rails;
+  rules.conf shared CLI+GUI; free home-relative roots; flags+rules sizes;
+  backend-first R1->R5. Recorded as D38–D42 (DECIDED).
+
 ## NEXT SESSION bootstrap (when the user returns)
 1. Standard four checks (see "Checks to re-run" above). Expected: origin/main
    == HEAD == the session-8 closure commit, tree clean, suite 356/0, S4 clean.
