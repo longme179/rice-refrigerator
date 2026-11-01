@@ -1,10 +1,15 @@
 """Display-free adapter between the rice-backup GUI and the bash backend.
 
 Everything the GUI knows about the backend lives here (GUI-PLAN.md section 5,
-plus the session-7 additions D32/D33):
+plus the session-7 additions D32/D33 and the R5 additions D38-D42):
 
   parse_dry_run()   dry-run summary text  -> DryRunSummary
   parse_file_list() --list-files output   -> [FileEntry]
+  parse_show_rules() --show-rules output  -> ShowRules (R5)
+  parse_explain()   --explain output      -> ExplainOut (R5)
+  rules read/write  rules.conf text IO    -> RulesConf (R5, mirrors lib/collect.sh)
+  ack_is_allowed()  [ack-scan] rail mirror (R5, mirrors rice_ack_is_allowed)
+  explain_stanza()  explain row -> copyable rules.conf stanza (R5)
   build_command()   GUI state             -> backend argv
   Runner            Popen + reader threads -> queue of (tag, chunk) events
   LineAssembler     chunk -> complete lines (+ partials: backend prompts are
@@ -16,9 +21,9 @@ plus the session-7 additions D32/D33):
 NO gtk imports in this module: it stays importable and unit-testable headless
 (C5/D24). gui_app.py owns all widgets.
 
-Backend contract: rice-backup >= 0.3.0 (needs --exclude-from / --export /
---list-files / symlink following D37). backend_version() parses the version
-for the startup check.
+Backend contract: rice-backup >= 0.4.0 (needs --exclude-from / --export /
+--list-files / symlink following D37 / --explain / --show-rules D42).
+backend_version() parses the version for the startup check.
 """
 
 from __future__ import annotations
@@ -38,7 +43,7 @@ from typing import Iterable, List, Optional, Sequence, Set, Tuple
 # version / toolroot helpers
 # --------------------------------------------------------------------------
 
-MIN_BACKEND_VERSION = "0.3.0"
+MIN_BACKEND_VERSION = "0.4.0"
 
 
 def default_toolroot() -> Path:
@@ -144,12 +149,14 @@ LARGEST_HEAD = "largest candidates (top 15 by size):"
 LARGEST_RE = re.compile(r"^\s+([0-9.]+)\s*(B|KiB|MiB|GiB)\s{2}(.+)$")
 EXCLUDED_HEAD = "excluded (names only):"
 EXCL_BLOCK_RE = re.compile(
-    r"^  (hard deny list|scan hits|user excluded|oversized|caches/junk)"
+    r"^  (hard deny list|scan hits|user excluded|oversized|caches/junk"
+    r"|deny overridden|scan acknowledged)"
     r"(?: \([^)]+\))?\s*:\s*(\d+) item\(s\)\s*$"
 )
 # A two-space-indented label line that is NOT one of the recognized excluded
-# blocks (e.g. "deny overridden", "scan acknowledged") closes the previous
-# block, so its item lines are never mis-attributed to a stale block.
+# blocks closes the previous block, so its item lines are never mis-attributed
+# to a stale block. ("deny overridden" / "scan acknowledged" ARE recognized
+# since R5 - the GUI shows them as their own notebook pages.)
 EXCL_BLOCKHEAD_RE = re.compile(r"^  \S.*:\s")
 EXCL_ITEM_RULE_RE = re.compile(r"^ {4}- (.+?) \[([^\]]+)\]$")
 EXCL_ITEM_SIZE_RE = re.compile(r"^ {4}- (.+?) \(([0-9.]+\s*(?:B|KiB|MiB|GiB))\)$")
@@ -284,6 +291,422 @@ def group_top(rel: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# rules.conf read/write (R5, mirrors rice_rules_load / rice_rules_clean_entry)
+# --------------------------------------------------------------------------
+
+RULES_SECTIONS = ("include-file", "include-dir", "skip-dir", "allow", "ack-scan")
+
+RULES_HEADER = (
+    "# rice-backup rules.conf - what gets backed up. Manually edited or via "
+    "the GUI Rules editor. Sections: [include-file] [include-dir] [skip-dir] "
+    "[allow] [ack-scan] [size]; see README.md 'Customizing what gets backed "
+    "up' for every key. Paths are home-relative; comments start with #.\n"
+)
+
+
+@dataclass
+class RulesConf:
+    """The editable content of rules.conf (D38). Lists keep file order,
+    duplicates removed; `warnings` collects the invalid lines found while
+    parsing so the GUI can show them instead of silently dropping them."""
+
+    include_files: List[str] = field(default_factory=list)
+    include_dirs: List[str] = field(default_factory=list)
+    skip_dirs: List[str] = field(default_factory=list)
+    allow: List[str] = field(default_factory=list)
+    ack_scan: List[str] = field(default_factory=list)
+    file_cap: str = ""        # raw text as typed ("50M"), "" = not set
+    total_budget: str = ""    # raw text as typed ("1G"), "" = not set
+    warnings: List[str] = field(default_factory=list)
+
+
+def rules_default_path(base: Optional[Path | str] = None) -> Path:
+    """~/.config/rice-backup/rules.conf - the SAME resolution the backend
+    uses (XDG_CONFIG_HOME first, then $HOME/.config)."""
+    if base is not None:
+        return Path(base) / "rules.conf"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    return root / "rice-backup" / "rules.conf"
+
+
+def rules_entry_problem(raw: str) -> Optional[str]:
+    """Mirror of rice_rules_clean_entry's refusal cases. Returns None when
+    the entry is fine, else a human reason (GUI displays it)."""
+    e = raw.split("#", 1)[0].strip()
+    if not e:
+        return "empty"
+    if e.startswith("/"):
+        return "absolute path - must be relative to the home"
+    if ".." in e:
+        return "must not contain .."
+    if e == ".":
+        return "must not be ."
+    return None
+
+
+def parse_size_text(raw: str) -> Optional[int]:
+    """Mirror of rice_rules_parse_size: plain bytes or N/NK/NM/NG (iB,
+    base 1024), case-insensitive, optional iB suffix. Bytes or None."""
+    v = re.sub(r"\s+", "", raw)
+    if not v:
+        return None
+    if not re.fullmatch(r"[0-9KkMmGgIiBb]+", v):
+        return None
+    v = v.upper()
+    mul = 1
+    for suffix, m in (("KIB", 1024), ("MIB", 1024 ** 2), ("GIB", 1024 ** 3),
+                      ("K", 1024), ("M", 1024 ** 2), ("G", 1024 ** 3)):
+        if v.endswith(suffix):
+            mul = m
+            v = v[: -len(suffix)]
+            break
+    if not v.isdigit():
+        return None
+    return int(v) * mul
+
+
+def parse_rules_text(text: str) -> RulesConf:
+    """Parse rules.conf content. Never raises; invalid lines become
+    warnings (mirrors the backend's warn-and-continue loader)."""
+    rc = RulesConf()
+    section = ""
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            if section not in RULES_SECTIONS and section != "size":
+                rc.warnings.append("unknown section ignored: [%s]" % section)
+                section = ""
+            continue
+        if "=" in line and section == "size":
+            key, _, val = (x.strip() for x in line.partition("="))
+            if key == "file_cap":
+                if parse_size_text(val) is None:
+                    rc.warnings.append("invalid file_cap ignored: %s" % val)
+                else:
+                    rc.file_cap = val
+            elif key == "total_budget":
+                if parse_size_text(val) is None:
+                    rc.warnings.append("invalid total_budget ignored: %s" % val)
+                else:
+                    rc.total_budget = val
+            else:
+                rc.warnings.append("unknown [size] key ignored: %s" % key)
+            continue
+        if "=" in line:
+            rc.warnings.append("key=value line outside [size] ignored: %s" % line)
+            continue
+        problem = rules_entry_problem(line)
+        if problem is not None:
+            rc.warnings.append("entry ignored (%s): %s" % (problem, line))
+            continue
+        target = {"include-file": rc.include_files, "include-dir": rc.include_dirs,
+                  "skip-dir": rc.skip_dirs, "allow": rc.allow,
+                  "ack-scan": rc.ack_scan}.get(section)
+        if target is None:
+            rc.warnings.append("entry outside a known section ignored: %s" % line)
+            continue
+        if line not in target:            # dedupe, keep first occurrence
+            target.append(line)
+    return rc
+
+
+def render_rules(rc: RulesConf) -> str:
+    """Canonical rules.conf text (same section order as the README)."""
+    out = [RULES_HEADER]
+    blocks = (
+        ("include-file", rc.include_files),
+        ("include-dir", rc.include_dirs),
+        ("skip-dir", rc.skip_dirs),
+        ("allow", rc.allow),
+        ("ack-scan", rc.ack_scan),
+    )
+    for name, entries in blocks:
+        if entries:
+            out.append("")
+            out.append("[%s]" % name)
+            out.extend(entries)
+    if rc.file_cap or rc.total_budget:
+        out.append("")
+        out.append("[size]")
+        if rc.file_cap:
+            out.append("file_cap = %s" % rc.file_cap)
+        if rc.total_budget:
+            out.append("total_budget = %s" % rc.total_budget)
+    return "\n".join(out) + "\n"
+
+
+def read_rules(path: Path | str) -> RulesConf:
+    """Read rules.conf; a missing/unreadable file is the empty conf, never
+    an exception (byte-identical backend behavior: no file = all defaults)."""
+    try:
+        return parse_rules_text(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return RulesConf()
+
+
+def write_rules(path: Path | str, rc: RulesConf) -> None:
+    """Write rules.conf with 0600 (parent 0700) - it lives in the backed-up
+    config tree, so it must stay user-private like gui.conf (D27/D34)."""
+    p = Path(path)
+    os.makedirs(str(p.parent), exist_ok=True)
+    try:
+        os.chmod(str(p.parent), 0o700)
+    except OSError:
+        pass
+    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(render_rules(rc))
+    try:
+        os.chmod(str(p), 0o600)
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------------
+# [ack-scan] rail mirror + rules stanza helpers (R5, D41)
+# --------------------------------------------------------------------------
+
+# Mirror of rice_ack_is_allowed: ONLY the heuristic content rules are
+# acknowledgeable. Token-shaped rules / key material are never ackable and
+# the GUI must refuse them exactly like the backend does.
+ACKABLE_SCAN_RULES = ("cred-assign", "bearer-token", "url-embedded-creds",
+                      "aws-secret-label")
+
+
+def ack_is_allowed(rule: str) -> bool:
+    return rule in ACKABLE_SCAN_RULES
+
+
+def rules_stanza(section: str, entries: Sequence[str]) -> str:
+    """The exact rules.conf stanza to paste for one section."""
+    if section not in RULES_SECTIONS:
+        raise ValueError("unknown rules section: %s" % section)
+    return "[%s]\n%s\n" % (section, "\n".join(entries))
+
+
+def explain_stanza(row: "ExplainRow",
+                   deny_dirs: Sequence[str] = ()) -> Tuple[str, str]:
+    """(stanza, note) for an --explain row: what the user can paste into
+    rules.conf to change this path's verdict, and why when they cannot.
+    The hard-core / token-shaped refusals mirror the backend rails - the GUI
+    never offers an override the backend would refuse.
+
+    `deny_dirs` (from parse_show_rules, lowercased prefix rules like '.ssh')
+    is required to keep the include-root stanza honest: children of a deny
+    dir are 'not considered' (the walk never enters it), and the backend
+    refuses deny-listed include roots outright (R2)."""
+    if row.layer == "L1 deny":
+        if "HARD CORE" in row.override:
+            return ("", "hard core rule - never overridable, remove the "
+                        "secret from the file instead")
+        if "soft rule" in row.override:
+            return (rules_stanza("allow", [row.path]),
+                    "soft rule - [allow] re-includes this path after review")
+        return ("", "")
+    if row.layer == "L2 scan":
+        if "acknowledged via [ack-scan]" in row.override:
+            return ("", "already acknowledged - remove the [ack-scan] entry "
+                        "to exclude it again")
+        if "ack REFUSED" in row.override or "NEVER acknowledgeable" in row.override:
+            return ("", "token-shaped or key material - never "
+                        "acknowledgeable; rotate or remove the secret")
+        if "heuristic rule" in row.override:
+            return (rules_stanza("ack-scan", [row.path]),
+                    "heuristic rule - [ack-scan] keeps this file after "
+                    "eyes-on review (still content-scanned every run)")
+        return ("", "")
+    if row.layer == "include roots":
+        if "/" in row.path:
+            target = row.path.rsplit("/", 1)[0]
+            low = target.lower()
+            for d in deny_dirs:
+                dl = d.strip().lower()
+                if dl and (low == dl or low.startswith(dl + "/")):
+                    return ("", "under the deny dir %s - never an include "
+                                "root (hard core)" % dl)
+            return (rules_stanza("include-dir", [target]),
+                    "outside every include root - add its directory")
+        return (rules_stanza("include-file", [row.path]),
+                "top-level file - add it as an include file")
+    if row.layer == "size cap":
+        return ("", "above the per-file cap - raise file_cap in [size] only "
+                    "if the file is safe to publish")
+    return ("", "")
+
+
+# --------------------------------------------------------------------------
+# --show-rules parsing (R5)
+# --------------------------------------------------------------------------
+
+@dataclass
+class RuleRow:
+    value: str          # root / glob / path as printed
+    note: str           # source (default|rules.conf|flag) or hard|soft mark
+
+
+@dataclass
+class ShowRules:
+    version: str = ""
+    rules_file: str = ""      # "" = defaults only
+    file_cap: str = ""
+    total_budget: str = ""
+    follow: bool = True
+    follow_outside: bool = False
+    include_files: List[RuleRow] = field(default_factory=list)
+    include_dirs: List[RuleRow] = field(default_factory=list)
+    skip_dirs: List[RuleRow] = field(default_factory=list)
+    deny_dirs: List[RuleRow] = field(default_factory=list)
+    deny_globs: List[RuleRow] = field(default_factory=list)
+    allow: List[RuleRow] = field(default_factory=list)
+    ack: List[RuleRow] = field(default_factory=list)
+    etc_allow: List[str] = field(default_factory=list)
+    parsed_ok: bool = False
+    raw: str = ""
+
+    def default_dirs(self) -> List[str]:
+        """Include dirs that come from the built-in defaults (the Rules
+        editor's checkbox list)."""
+        return [r.value for r in self.include_dirs if r.note == "default"]
+
+    def default_files(self) -> List[str]:
+        return [r.value for r in self.include_files if r.note == "default"]
+
+
+_SR_HEAD = "=== rice-backup effective rules ==="
+_SR_VERSION_RE = re.compile(r"^version\s*:\s*(\S+)")
+_SR_RULESFILE_RE = re.compile(r"^rules file\s*:\s*(.*?)\s*\(loaded\)")
+_SR_RULESFILE_NONE_RE = re.compile(r"^rules file\s*:\s*\(none")
+_SR_FILECAP_RE = re.compile(r"^file cap\s*:\s*(.+?)\s+per file")
+_SR_BUDGET_RE = re.compile(r"^total budget\s*:\s*(.+?)\s+\(a real run")
+_SR_SYMLINKS_RE = re.compile(
+    r"^symlinks\s*:\s*follow=(\d+)\s+outside-home=(\d+)")
+_SR_ENTRY_RE = re.compile(r"^  (.+?)\s+\(([^()]*)\)\s*$")
+_SR_HEADERS = {
+    "include files (top-level, exact name under the home):": "include_files",
+    "include dirs (walked recursively):": "include_dirs",
+    "skipped include roots ([skip-dir], not walked at all):": "skip_dirs",
+    "deny dirs (L1, path prefixes; hard = never overridable via [allow]):": "deny_dirs",
+    "deny file globs (L1, matched against the whole path):": "deny_globs",
+    "allow overrides ([allow]/--allow, soft rules only):": "allow",
+    "scan acknowledgements ([ack-scan], exact file paths only):": "ack",
+    "/etc allowlist (only with --include-system):": "etc",
+}
+_SR_ROWS = {v: k for k, v in _SR_HEADERS.items()}
+
+
+def parse_show_rules(text: str) -> ShowRules:
+    """Parse --show-rules output (offline). Never raises; parsed_ok=False
+    keeps raw for a fallback view."""
+    sr = ShowRules(raw=text)
+    if _SR_HEAD not in text:
+        return sr
+    sr.parsed_ok = True
+    section = ""
+    for line in text.splitlines():
+        if line == _SR_HEAD:
+            continue
+        m = _SR_VERSION_RE.match(line)
+        if m:
+            sr.version = m.group(1)
+            continue
+        m = _SR_RULESFILE_RE.match(line)
+        if m:
+            sr.rules_file = m.group(1)
+            continue
+        if _SR_RULESFILE_NONE_RE.match(line):
+            sr.rules_file = ""
+            continue
+        m = _SR_FILECAP_RE.match(line)
+        if m:
+            sr.file_cap = m.group(1)
+            continue
+        m = _SR_BUDGET_RE.match(line)
+        if m:
+            sr.total_budget = m.group(1)
+            continue
+        m = _SR_SYMLINKS_RE.match(line)
+        if m:
+            sr.follow = m.group(1) == "1"
+            sr.follow_outside = m.group(2) == "1"
+            continue
+        if line in _SR_HEADERS:
+            section = _SR_HEADERS[line]
+            continue
+        if section == "etc":
+            if line.startswith("  ") and line.strip():
+                sr.etc_allow.append(line.strip())
+            continue
+        m = _SR_ENTRY_RE.match(line)
+        if m and section in _SR_ROWS and section != "etc":
+            getattr(sr, section).append(RuleRow(value=m.group(1), note=m.group(2)))
+    return sr
+
+
+# --------------------------------------------------------------------------
+# --explain parsing (R5)
+# --------------------------------------------------------------------------
+
+@dataclass
+class ExplainRow:
+    path: str
+    verdict: str = ""        # included | excluded | skipped | not found | ...
+    layer: str = ""          # L1 deny | L2 scan | selection | size cap | ...
+    rule: str = ""
+    override: str = ""       # rail line, present for L1 deny / L2 scan rows
+
+
+@dataclass
+class ExplainOut:
+    home: str = ""
+    rows: List[ExplainRow] = field(default_factory=list)
+    parsed_ok: bool = False
+    raw: str = ""
+
+    def first(self) -> Optional[ExplainRow]:
+        return self.rows[0] if self.rows else None
+
+
+_EXPLAIN_HEAD = "=== rice-backup explain ==="
+_EXPLAIN_HOME_RE = re.compile(r"^home\s*:\s*(.+)$")
+_EXPLAIN_FIELD_RE = re.compile(r"^ {6}(verdict|layer|rule|override)\s*:\s*(.*)$")
+_EXPLAIN_NOISE = ("[rice-backup]", "info:", "warn:")
+
+
+def parse_explain(text: str) -> ExplainOut:
+    """Parse `--explain PATH...` output (offline path mode; the bucket dump
+    produced without paths is a terminal view, not a GUI input). One row per
+    explained path with its verdict chain. Never raises."""
+    out = ExplainOut(raw=text)
+    if _EXPLAIN_HEAD not in text:
+        return out
+    out.parsed_ok = True
+    current: Optional[ExplainRow] = None
+    for line in text.splitlines():
+        if line == _EXPLAIN_HEAD:
+            continue
+        m = _EXPLAIN_HOME_RE.match(line)
+        if m:
+            out.home = m.group(1).strip()
+            continue
+        m = _EXPLAIN_FIELD_RE.match(line)
+        if m:
+            if current is not None:
+                setattr(current, {"verdict": "verdict", "layer": "layer",
+                                  "rule": "rule", "override": "override"}[m.group(1)],
+                        m.group(2).strip())
+            continue
+        if not line.strip() or any(line.startswith(p) for p in _EXPLAIN_NOISE):
+            continue
+        current = ExplainRow(path=line.strip())
+        out.rows.append(current)
+    return out
+
+
+# --------------------------------------------------------------------------
 # selection compression (what gets written to --exclude-from)
 # --------------------------------------------------------------------------
 
@@ -371,10 +794,14 @@ def build_command(
     list_files: bool = False,
     follow_symlinks: bool = True,
     follow_outside: bool = False,
+    show_rules: bool = False,
+    explain: Optional[Sequence[str]] = None,
 ) -> List[str]:
     args: List[str] = ["bash", str(script)]
     if list_files:
         args.append("--list-files")            # exits before auth/repo (offline)
+    if show_rules:
+        args.append("--show-rules")            # offline rule-set dump (R5)
     if dry_run:
         args.append("--dry-run")
     if assume_yes:
@@ -385,7 +812,8 @@ def build_command(
         args.append("--no-follow-symlinks")
     if follow_outside:
         args.append("--follow-outside-home")
-    if repo and not export_path and not list_files:
+    if repo and not export_path and not list_files and not show_rules \
+            and not explain:
         args += ["--repo", repo]
     if home:
         args += ["--home", str(home)]
@@ -395,6 +823,11 @@ def build_command(
         args += ["--exclude-from", str(exclude_from)]
     if export_path:
         args += ["--export", str(export_path)]
+    if explain:
+        # PATHs must come LAST: after --explain every non-flag argument is
+        # treated as an explain path by the backend.
+        args.append("--explain")
+        args += [str(p) for p in explain]
     return args
 
 

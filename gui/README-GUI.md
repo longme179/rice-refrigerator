@@ -31,10 +31,10 @@ optional and simply not used when absent.
 | file | role |
 |---|---|
 | `gui/rice-gui` | launcher + dependency self-check (per-distro hints) |
-| `gui/gui_app.py` | GTK4 windows: setup, review checklist, progress, result, dialogs |
-| `gui/adapter.py` | display-free backend contract: parsing, command building, subprocess runner, prompt relay, redaction, selection compression |
+| `gui/gui_app.py` | GTK4 windows: setup, review checklist, progress, result, rules editor, explain dialog |
+| `gui/adapter.py` | display-free backend contract: parsing, command building, subprocess runner, prompt relay, redaction, selection compression, rules.conf IO, --show-rules / --explain parsing |
 | `gui/guiconf.py` | session persistence: `gui.conf` + `selection.txt` (both 0600) |
-| `gui/tests/` | headless unittest suite (45 tests) — no PyGObject needed |
+| `gui/tests/` | headless unittest suite (82 tests) — no PyGObject needed |
 
 `adapter.py` and `guiconf.py` import no GTK and run headless: they are the
 unit-tested core (wired into the bash suite as t24). `gui_app.py` needs a
@@ -56,6 +56,23 @@ display and is verified via the manual checklist below.
   targets are already backed up stay links. The dry-run summary shows the
   counts ("Symlinks: N followed … M kept as links"); every decision is in
   the backup's `reports/SYMLINKS.md`.
+- **Customize WHAT gets backed up (R5).** The review window has a **Rules**
+  tab and a **Rules…** button: the rules editor reads/writes
+  `~/.config/rice-backup/rules.conf` (0600). Untick default include roots
+  (written as `[skip-dir]`), add custom `[include-file]`/`[include-dir]`
+  roots, manage `[allow]` deny overrides (each add is verified with
+  `--explain` first — hard-core paths are refused, exactly like the
+  backend refuses them), manage `[ack-scan]` entries (gated behind a
+  confirmation that names the matched scan rule; token-shaped rules are
+  refused outright), and set the `[size]` caps. "Save & re-run dry-run"
+  writes the file and refreshes the review so you see the effect
+  immediately.
+- **Explain any excluded row (R5).** Double-click a row in the Deny /
+  Scan hits / Overridden / Acked tabs: the explain dialog runs
+  `--explain PATH` (offline, read-only) and shows the full verdict chain
+  (verdict / layer / rule / override) plus the exact rules.conf stanza to
+  copy when the rails allow an override — hard-core and token-shaped
+  refusals are shown as such and never offered.
 - **Sessions persist.** Repository, home, include-/etc, symlink following,
   window size and the tick state survive restarts (`gui.conf` +
   `selection.txt`, both mode 0600, nothing credential-shaped — rule D27/D34).
@@ -87,10 +104,15 @@ display and is verified via the manual checklist below.
 ## Development status (honesty labels, C5)
 
 RAN headless in the development sandbox (each push):
-`python3 -m py_compile` on all GUI sources, the 45-test unittest suite
+`python3 -m py_compile` on all GUI sources, the 82-test unittest suite
 (adapter parsing, command building, prompt relay, redaction, selection
-compression, guiconf persistence + file modes), and the full bash acceptance
-suite (t24 runs both).
+compression, guiconf persistence + file modes, rules.conf IO +
+--show-rules / --explain parsing + ack rails + stanza generation), the
+full bash acceptance suite (t24 runs both) and the live GUI↔backend
+contract rig (`tests/verify-gui-contract.sh`, including the R5 flows:
+real `--show-rules` / `--explain` output parsed, adapter-written
+rules.conf driving a real dry-run with `deny overridden` /
+`scan acknowledged` blocks).
 
 NOT RUN in the sandbox (no display / no PyGObject there) — manual checklist
 for a real Fedora/Arch/Ubuntu machine:
@@ -117,6 +139,26 @@ for a real Fedora/Arch/Ubuntu machine:
 10. Token wipe: after closing the setup window, no RICE_TOKEN in the GUI
     process environment (`cat /proc/<pid>/environ` — same-uid readable, as
     with the CLI).
+11. **Rules tab (R5):** open Rules… from the review window — the default
+    include roots load as checkboxes (after a short --show-rules run);
+    untick `.local/share/wallpapers`, Save & re-run dry-run: the next
+    summary no longer counts that tree, and `--show-rules` (CLI) lists it
+    under skipped include roots.
+12. **Rules editor rails (R5):** Allow page → "Add from current exclusions…"
+    → pick a hard-core item (e.g. `.ssh`) → the dialog REFUSES (no entry
+    added); pick a soft item (e.g. `.bash_history`) → confirm → the entry
+    appears with its original deny rule, and the next dry-run shows the
+    Overridden tab with the file re-included.
+13. **Ack gating (R5):** Ack page → "Add from current scan hits…" → pick a
+    token-shaped hit → "Cannot be acknowledged" dialog, nothing added;
+    pick a heuristic hit (cred-assign etc.) → confirmation names the rule
+    and the rail policy → after Save & re-run the Acked tab shows the kept
+    file.
+14. **Explain view (R5):** double-click a row in Deny / Scan hits → the
+    dialog shows the verdict chain; a soft deny offers "Copy rules.conf
+    stanza" (pasting it into rules.conf works); a hard-core / token-shaped
+    row shows the refusal text and NO copy button. The dialog never freezes
+    while --explain runs.
 
 Implementation notes: the file checklist uses a virtualized `Gtk.TreeView`
 (native checkbox renderer) instead of the planned `Gtk.ListView` — same

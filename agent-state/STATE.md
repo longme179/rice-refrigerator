@@ -354,16 +354,14 @@ over recollection. Never write secrets here.
 ## Session 9 — 2026-11-01 (deep customization: D38–D42 planned, then R1–R5)
 
 ## NEXT ACTION (write-ahead) — session 9, current
-1. R5 (final milestone): GUI Rules tab (rules.conf editor: default-roots
-   checkboxes -> [skip-dir], add-root/add-file entries, [allow] editor showing
-   each entry's ORIGINAL deny rule, [ack-scan] editor gated by the rail policy
-   with token-shaped rules shown as "cannot be acknowledged") + explain view
-   on excluded rows (adapter explain() + rules-file helpers) + gui/README-GUI
-   checklist addition; adapter tests extended; then REBUILD the 0.4.0 tarball
-   into download/ + update download/README.md (D38–D42 complete).
-2. User real-machine follow-ups (unchanged): 0.3.0 re-run results, GUI
-   checklist, .config/mango/scripts/networks.py inspection (now solvable via
-   [ack-scan] if it is a false positive), still-public repo reminder.
+1. R5 CODE DONE: commit + push (S4 tree scan unexpected=0 already verified).
+2. Rebuild download/rice-backup-0.4.0.tar.gz from the pushed HEAD (git
+   archive), re-verify the suite FROM the extracted tarball, refresh
+   download/README.md for 0.4.0, then close session 9 (final user report vi).
+3. User real-machine follow-ups (unchanged): 0.3.0 re-run results, GUI
+   checklist (now items 1–14 incl. the Rules tab + explain view),
+   .config/mango/scripts/networks.py inspection (solvable via [ack-scan] if
+   it is a false positive), still-public repo reminder.
 
 ## Session-9 result log (append-only)
 - [s9] RAN bootstrap: main == origin/main == a77a1b5, tree clean; fixtures
@@ -418,18 +416,35 @@ over recollection. Never write secrets here.
   values ARE canaries -> the real-run ack target is the new non-canary
   fixture .config/innocent/api-notes.md (canaries_absent still passes on the
   clone). Committing + pushing next; remaining: R5 only.
+- [s9] RAN R5 milestone (D38–D42 closure, RULES-PLAN section 8): adapter
+  gained rules.conf IO (parse/render/read/write, 0600+0700, mirrors the
+  bash loader incl. warnings), parse_show_rules, parse_explain,
+  ack_is_allowed mirror, rules_stanza + explain_stanza(row, deny_dirs)
+  with backend-equivalent refusals, build_command show_rules=/explain=,
+  EXCL_BLOCK_RE extended (deny overridden / scan acknowledged blocks),
+  MIN_BACKEND_VERSION 0.4.0; gui_app gained run_backend_async + clear_box /
+  listbox_rows + choose_from_list + ExplainDialog + RulesWindow (roots /
+  allow / ack / sizes pages with live --explain verification and ack rail
+  gating) + interactive ReviewWindow pages + Rules tab + Rules… button;
+  gui tests 61 -> 82, contract rig checks 7–9, README-GUI checklist 11–14,
+  README GUI paragraph; suite **516/0**, S4 tree unexpected=0. Found+fixed
+  in self-review: choose_from_list missing loop.run() (returned immediately),
+  _extra_skip early-Save race, show-rules cache wipe on failed rerun.
+  Committing + pushing next; then the 0.4.0 tarball into download/.
 
 ## NEXT SESSION bootstrap (when the user returns)
 1. Standard four checks (see "Checks to re-run" above). Expected: origin/main
-   == HEAD == the session-8 closure commit, tree clean, suite 356/0, S4 clean.
+   == HEAD == the session-9 R5 commit (see journal 09), tree clean, suite
+   516/0 (t24 = 82 adapter unittests), S4 clean, contract rig ALL OK.
    If /tmp/rice-auth lost .pat/env.sh (sandbox recycle) → pushing will need the
    user's PAT again (S3: ask and wait; NEVER search the filesystem).
-2. EXPECTED USER INPUT: results of the real-machine 0.3.0 re-run — the
-   `symlinks followed : N link(s) -> M file(s)` dry-run line, whether
-   home/.config/quickshell/lme-shell now carries real content in the repo,
-   reports/SYMLINKS.md sanity, and the 10-point GUI manual checklist.
-3. Candidate work depending on feedback: fix any real-machine symlink/report
+2. EXPECTED USER INPUT: results of the real-machine 0.4.0 run — the dry-run
+   with rules.conf (e.g. [ack-scan] for .config/mango/scripts/networks.py if
+   it is an innocent cred-assign false positive, [allow] for soft name-deny
+   victims, [skip-dir] for bulky default roots), --explain/--show-rules
+   sanity, and the 14-point GUI manual checklist (items 11–14 cover the new
+   Rules tab, editor rails, ack gating and explain view).
+3. Candidate work depending on feedback: fix any real-machine rules/GUI
    findings; GUI M3 restore frontend stays deferred (D29) until a real backup
-   exists to restore from; revisit the 1 scan hit from the user's first real
-   run (.config/mango/scripts/networks.py — user was to inspect it); remind
-   about the still-public target repo if still public.
+   exists to restore from; remind about the still-public target repo if
+   still public.

@@ -4,7 +4,9 @@ HONESTY LABEL (C5): this module imports PyGObject and is NOT RUN in the
 development sandbox (no display, no PyGObject installed there). It is
 py_compile-checked; all backend-facing logic lives in adapter.py and IS
 unit-tested headless (gui/tests). The manual checklist in gui/README-GUI.md
-covers the widget-level behaviours on the user's real machine.
+covers the widget-level behaviours on the user's real machine — including
+the R5 additions: the Rules editor window, the explain dialog and the
+interactive excluded-row pages.
 
 Security posture implemented here (S1-S5 + GUI rules):
   - the PAT lives only in app memory and the child process environment
@@ -663,16 +665,22 @@ class ReviewWindow(Gtk.ApplicationWindow):
 
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         nb = Gtk.Notebook()
-        for key, title in (("hard deny list", "Deny"), ("scan hits", "Scan hits"),
-                           ("oversized", "Oversized"),
-                           ("caches/junk", "Caches")):
+        # R5: the excluded pages are interactive (activate a row -> explain
+        # view); "Overridden" / "Acked" only exist when the backend printed
+        # them (non-empty [allow]/[ack-scan] effects).
+        for key, title, live in (
+                ("hard deny list", "Deny", True),
+                ("scan hits", "Scan hits", True),
+                ("deny overridden", "Overridden", True),
+                ("scan acknowledged", "Acked", True),
+                ("oversized", "Oversized", False),
+                ("caches/junk", "Caches", False)):
             block = summary.block(key)
-            items = block.items if block else []
-            page = self._list_page(
-                ["%s  %s" % (p, ("[%s]" % n) if n else "") for p, n in items]
-                or ["(none)"])
-            nb.append_page(page, Gtk.Label(
+            if key in ("deny overridden", "scan acknowledged") and not block:
+                continue
+            nb.append_page(self._excl_page(block, live), Gtk.Label(
                 label="%s (%d)" % (title, block.count if block else 0)))
+        nb.append_page(self._rules_page(), Gtk.Label(label="Rules"))
         self.session_page_label = Gtk.Label(label="Session (0)")
         nb.append_page(self._session_page(), self.session_page_label)
         right.append(nb)
@@ -737,6 +745,8 @@ class ReviewWindow(Gtk.ApplicationWindow):
         btns.set_halign(Gtk.Align.END)
         back = Gtk.Button(label="_Back", use_underline=True)
         back.connect("clicked", self._on_back)
+        rules_btn = Gtk.Button(label="_Rules…", use_underline=True)
+        rules_btn.connect("clicked", self._on_open_rules)
         refresh = Gtk.Button(label="_Refresh", use_underline=True)
         refresh.connect("clicked", self._on_refresh)
         self.export_btn = Gtk.Button(label="E_xport archive…", use_underline=True)
@@ -745,7 +755,7 @@ class ReviewWindow(Gtk.ApplicationWindow):
         self.run_btn.get_style_context().add_class("suggested-action")
         self.run_btn.connect("clicked", self._on_start_backup)
         self.run_btn.set_visible(not app.offline_mode)
-        for b in (back, refresh, self.export_btn, self.run_btn):
+        for b in (back, rules_btn, refresh, self.export_btn, self.run_btn):
             btns.append(b)
         outer.append(btns)
 
@@ -754,6 +764,9 @@ class ReviewWindow(Gtk.ApplicationWindow):
         self._refresh_session_page()
         self._update_header()
         self.present()
+        # warm the --show-rules cache so the first explain view can gate
+        # include-root stanzas on the deny dirs (R5)
+        app.load_show_rules()
 
     # -- checklist plumbing ----------------------------------------------------
 
@@ -853,6 +866,103 @@ class ReviewWindow(Gtk.ApplicationWindow):
         sc.set_min_content_height(180)
         sc.set_child(self._session_box)
         return sc
+
+    def _excl_page(self, block, live: bool) -> Gtk.Widget:
+        """One excluded block as a notebook page. `live` pages (deny / scan
+        / overridden / acked) are ListBoxes whose rows open the explain view
+        (RULES-PLAN section 8: context action on an excluded row)."""
+        items = list(block.items) if block else []
+        if not live:
+            return self._list_page(
+                ["%s  %s" % (p, ("[%s]" % n) if n else "") for p, n in items]
+                or ["(none)"])
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.append(Gtk.Label(
+            label="<small>double-click a row to explain its verdict chain</small>",
+            use_markup=True, halign=Gtk.Align.START))
+        lb = Gtk.ListBox()
+        lb.set_selection_mode(Gtk.SelectionMode.NONE)
+        if items:
+            for p, n in items[:500]:
+                row = Gtk.ListBoxRow()
+                lbl = Gtk.Label(
+                    label=esc("%s  %s" % (p, ("[%s]" % n) if n else "")),
+                    halign=Gtk.Align.START)
+                lbl.set_property("ellipsize", ellipsize_end())
+                row.set_child(lbl)
+                try:
+                    row._path = p
+                except Exception:
+                    pass
+                lb.append(row)
+            if len(items) > 500:
+                lb.append(Gtk.ListBoxRow(child=Gtk.Label(
+                    label="… and %d more (see the dry-run log)"
+                          % (len(items) - 500))))
+        else:
+            lb.append(Gtk.ListBoxRow(child=Gtk.Label(label="(none)")))
+        lb.connect("row-activated", self._on_excl_row)
+        sc = Gtk.ScrolledWindow()
+        sc.set_min_content_height(160)
+        sc.set_child(lb)
+        box.append(sc)
+        return box
+
+    def _on_excl_row(self, lb: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
+        path = getattr(row, "_path", None)
+        if path:
+            ExplainDialog(self.rice, self, path)
+
+    def _rules_page(self) -> Gtk.Widget:
+        """Summary of the ACTIVE rules.conf + the editor entry point (R5)."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        rc = adapter.read_rules(self.rice.rules_path)
+        lines: List[str] = []
+        sections = (
+            ("[include-file]", rc.include_files),
+            ("[include-dir]", rc.include_dirs),
+            ("[skip-dir]", rc.skip_dirs),
+            ("[allow]", rc.allow),
+            ("[ack-scan]", rc.ack_scan),
+        )
+        active = any(entries for _n, entries in sections) or rc.file_cap or rc.total_budget
+        if not active:
+            lines.append("defaults only - no rules.conf entries yet")
+        for name, entries in sections:
+            if entries:
+                lines.append("%s (%d):" % (name, len(entries)))
+                lines.extend("  %s" % v for v in entries[:8])
+                if len(entries) > 8:
+                    lines.append("  … and %d more" % (len(entries) - 8))
+        if rc.file_cap:
+            lines.append("[size] file_cap = %s" % rc.file_cap)
+        if rc.total_budget:
+            lines.append("[size] total_budget = %s" % rc.total_budget)
+        for text in lines[:60]:
+            lbl = Gtk.Label(label=esc(text), halign=Gtk.Align.START)
+            lbl.set_property("ellipsize", ellipsize_end())
+            box.append(lbl)
+        if len(lines) > 60:
+            box.append(Gtk.Label(label="… and %d more" % (len(lines) - 60)))
+        btn = Gtk.Button(label="_Open the rules editor…", use_underline=True)
+        btn.connect("clicked", self._on_open_rules)
+        box.append(btn)
+        box.append(Gtk.Label(
+            label="<small>changes take effect on the next dry-run / backup; "
+                  "'Save & re-run dry-run' refreshes this view</small>",
+            use_markup=True, halign=Gtk.Align.START))
+        sc = Gtk.ScrolledWindow()
+        sc.set_min_content_height(180)
+        sc.set_child(box)
+        return sc
+
+    def _on_open_rules(self, _btn: Optional[Gtk.Button]) -> None:
+        win = RulesWindow(self.rice, on_saved=self._on_rules_saved)
+        self.rice.register_window("rules", win)
+
+    def _on_rules_saved(self) -> None:
+        """After 'Save & re-run dry-run' in the rules editor."""
+        self._on_refresh(None)
 
     def _list_page(self, lines: Sequence[str]) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
@@ -1024,8 +1134,715 @@ class ReviewWindow(Gtk.ApplicationWindow):
 
 
 # --------------------------------------------------------------------------
-# ResultWindow
+# offline backend helper (R5): --explain / --show-rules without blocking GTK
 # --------------------------------------------------------------------------
+
+_ASYNC_RUNNERS: List[object] = []
+
+
+def clear_box(box: Gtk.Widget) -> None:
+    """Remove every child of a Gtk.Box / Gtk.ListBox (GTK4 containers are
+    not Python-iterable; walk the sibling chain instead)."""
+    child = box.get_first_child()
+    while child is not None:
+        nxt = child.get_next_sibling()
+        box.remove(child)
+        child = nxt
+
+
+def listbox_rows(lb: Gtk.ListBox) -> List[Gtk.ListBoxRow]:
+    child = lb.get_first_child()
+    rows: List[Gtk.ListBoxRow] = []
+    while child is not None:
+        rows.append(child)
+        child = child.get_next_sibling()
+    return rows
+
+
+def run_backend_async(argv: Sequence[str],
+                      on_done: Callable[[int, str], None]) -> None:
+    """Spawn an OFFLINE backend command (--explain / --show-rules: no PAT
+    ever enters the child environment) and deliver (rc, combined text) on
+    the GTK main thread via GLib.timeout_add. The runner is kept alive in a
+    module-level list so a closing dialog can never orphan it mid-read."""
+    runner = adapter.Runner([str(a) for a in argv],
+                            env=adapter.child_env(None)).start()
+    _ASYNC_RUNNERS.append(runner)
+    chunks: List[str] = []
+
+    def _tick() -> bool:
+        for _tag, chunk in runner.poll_events(timeout=0.0):
+            chunks.append(chunk)
+        if runner.alive():
+            return True
+        rc = runner.wait()
+        for _tag, chunk in runner.poll_events(timeout=0.3):
+            chunks.append(chunk)
+        try:
+            _ASYNC_RUNNERS.remove(runner)
+        except ValueError:
+            pass
+        try:
+            on_done(rc if rc is not None else 0, "".join(chunks))
+        except Exception:
+            pass                # the receiving widget may already be gone
+        return False
+
+    GLib.timeout_add(80, _tick)
+
+
+def choose_from_list(parent: Gtk.Window, title: str,
+                     items: Sequence[Tuple[str, str]],
+                     hint: str = "") -> Optional[Tuple[str, str]]:
+    """Modal chooser over (path, note) pairs; returns the picked pair or
+    None. Single-click selects, double-click or Select accepts. Runs a
+    nested GLib main loop like confirm_dialog (show() alone does not
+    block)."""
+    dlg = Gtk.Dialog(title=title, transient_for=parent, modal=True)
+    dlg.set_default_size(560, 420)
+    picked = {"item": None}
+    loop = GLib.MainLoop()
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    box.set_margin_top(8)
+    box.set_margin_bottom(8)
+    box.set_margin_start(10)
+    box.set_margin_end(10)
+    if hint:
+        lbl = Gtk.Label(label="<small>%s</small>" % esc(hint), use_markup=True,
+                        halign=Gtk.Align.START, wrap=True)
+        box.append(lbl)
+    lb = Gtk.ListBox()
+    for path, note in items:
+        row = Gtk.ListBoxRow()
+        text = "%s  %s" % (path, ("[%s]" % note) if note else "")
+        rl = Gtk.Label(label=esc(text), halign=Gtk.Align.START)
+        rl.set_property("ellipsize", ellipsize_end())
+        row.set_child(rl)
+        lb.append(row)
+    if not items:
+        lb.append(Gtk.ListBoxRow(child=Gtk.Label(label="(nothing to list)")))
+    sc = Gtk.ScrolledWindow()
+    sc.set_vexpand(True)
+    sc.set_child(lb)
+    box.append(sc)
+    dlg.get_content_area().append(box)
+
+    def _activated(_lb, row):
+        picked["item"] = getattr(row, "_item", None)
+        dlg.response(Gtk.ResponseType.OK)
+
+    # attach items to their rows (the '(nothing to list)' filler maps to None)
+    for r, item in zip(listbox_rows(lb), list(items) if items else [None]):
+        try:
+            r._item = item
+        except Exception:
+            pass
+    lb.connect("row-activated", _activated)
+    dlg.add_button("_Cancel", Gtk.ResponseType.CANCEL)
+    btn = dlg.add_button("_Select", Gtk.ResponseType.OK)
+    btn.get_style_context().add_class("suggested-action")
+
+    def _resp(d, r):
+        if r == Gtk.ResponseType.OK and picked["item"] is None:
+            sel = lb.get_selected_row()
+            if sel is not None:
+                picked["item"] = getattr(sel, "_item", None)
+        d.destroy()
+        loop.quit()
+
+    dlg.connect("response", _resp)
+    dlg.show()
+    loop.run()
+    return picked["item"]
+
+
+# --------------------------------------------------------------------------
+# ExplainDialog: verdict chain for one path (R5, RULES-PLAN section 8)
+# --------------------------------------------------------------------------
+
+class ExplainDialog(Gtk.Dialog):
+    """Runs `--explain PATH` (offline, read-only) and renders the verdict
+    chain. Offers the exact rules.conf stanza to copy when the backend rails
+    allow an override; hard-core / token-shaped refusals are shown as such
+    and never offered."""
+
+    def __init__(self, app: "RiceGuiApp", parent: Gtk.Window, path: str) -> None:
+        super().__init__(title="Explain: %s" % path, transient_for=parent,
+                         modal=True)
+        self.rice = app
+        self.path = path
+        self._stanza = ""
+        self.set_default_size(600, 400)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+
+        self.body = Gtk.Label(
+            label="<i>running --explain (offline, read-only)…</i>",
+            use_markup=True, halign=Gtk.Align.START, wrap=True)
+        box.append(self.body)
+
+        self.raw_buffer = Gtk.TextBuffer()
+        view = Gtk.TextView(buffer=self.raw_buffer)
+        view.set_editable(False)
+        view.set_cursor_visible(False)
+        view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        sc = Gtk.ScrolledWindow()
+        sc.set_vexpand(True)
+        sc.set_child(view)
+        box.append(sc)
+
+        self.note_lbl = Gtk.Label(label="", halign=Gtk.Align.START, wrap=True)
+        box.append(self.note_lbl)
+        self.stanza_btn = Gtk.Button(label="Copy rules.conf _stanza",
+                                     use_underline=True, sensitive=False)
+        self.stanza_btn.connect("clicked", self._on_copy)
+        self.stanza_btn.set_halign(Gtk.Align.END)
+        box.append(self.stanza_btn)
+
+        self.get_content_area().append(box)
+        self.add_button("_Close", Gtk.ResponseType.CLOSE)
+        self.connect("response", lambda d, r: d.destroy())
+        self.present()
+
+        argv = adapter.build_command(app.backend_script(), home=app.home,
+                                     explain=[path])
+        run_backend_async(argv, self._done)
+
+    def _done(self, rc: int, text: str) -> None:
+        text = adapter.redact(text, self.rice.pat)
+        self.raw_buffer.insert(self.raw_buffer.get_end_iter(), text)
+        out = adapter.parse_explain(text)
+        row = out.first()
+        if row is None:
+            self.body.set_markup("<b>%s</b> - no verdict (exit %d); see the "
+                                 "raw output below" % (esc(self.path), rc))
+            return
+        lines = ["<b>%s</b>" % esc(row.path),
+                 "verdict : %s" % esc(row.verdict),
+                 "layer   : %s" % esc(row.layer),
+                 "rule    : %s" % esc(row.rule)]
+        if row.override:
+            lines.append("override: %s" % esc(row.override))
+        self.body.set_markup("\n".join(lines))
+        deny_dirs = ()
+        if self.rice.show_rules is not None:
+            deny_dirs = [r.value for r in self.rice.show_rules.deny_dirs]
+        stanza, note = adapter.explain_stanza(row, deny_dirs)
+        if stanza:
+            self._stanza = stanza
+            self.stanza_btn.set_sensitive(True)
+            self.note_lbl.set_text(note)
+        else:
+            self.note_lbl.set_text(note or "nothing to override for this "
+                                            "verdict")
+
+    def _on_copy(self, w: Gtk.Button) -> None:
+        copy_to_clipboard(w, self._stanza)
+
+
+# --------------------------------------------------------------------------
+# RulesWindow: the rules.conf editor (R5, RULES-PLAN section 8)
+# --------------------------------------------------------------------------
+
+class RulesWindow(Gtk.ApplicationWindow):
+    """Edits ~/.config/rice-backup/rules.conf:
+
+      - Roots page: default include roots with enable checkboxes (an
+        unchecked root is written to [skip-dir]) plus the custom
+        [include-file]/[include-dir] entries.
+      - Allow page: [allow] entries, each annotated with the deny rule it
+        overrides (from the current dry-run); adding runs --explain first so
+        hard-core paths are refused exactly like the backend refuses them.
+      - Ack page: [ack-scan] entries; adding is gated behind a confirmation
+        that names the matched scan rule and the rail policy - token-shaped
+        rules are refused outright (adapter.ack_is_allowed).
+      - Sizes page: [size] file_cap / total_budget.
+
+    Saving writes via adapter.write_rules (0600); the backend re-reads the
+    file on the next run, and 'Save & re-run dry-run' triggers the refresh
+    so the user sees the effect immediately."""
+
+    def __init__(self, app: "RiceGuiApp",
+                 on_saved: Optional[Callable[[], None]] = None) -> None:
+        super().__init__(application=app, title="Backup rules (rules.conf)")
+        self.rice = app
+        self.on_saved = on_saved
+        self._updating = False
+        self.rules_path = app.rules_path
+        self.rc = adapter.read_rules(self.rules_path)
+        # [skip-dir] entries are preserved verbatim until the default roots
+        # load (they are recomputed against them in _fill_default_roots), so
+        # an early Save cannot drop them (race guard).
+        self._extra_skip = list(self.rc.skip_dirs)
+
+        self.set_default_size(720, 560)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        outer.set_margin_top(10)
+        outer.set_margin_bottom(10)
+        outer.set_margin_start(12)
+        outer.set_margin_end(12)
+
+        path_lbl = Gtk.Label(
+            label="<small>rules file: <b>%s</b> - read by every future run; "
+                  "0600, safe to edit by hand</small>"
+                  % esc(str(self.rules_path)),
+            use_markup=True, halign=Gtk.Align.START)
+        outer.append(path_lbl)
+        self.status_lbl = Gtk.Label(label="", halign=Gtk.Align.START, wrap=True)
+        outer.append(self.status_lbl)
+
+        nb = Gtk.Notebook()
+        nb.append_page(self._roots_page(), Gtk.Label(label="Roots"))
+        nb.append_page(self._allow_page(), Gtk.Label(label="Allow"))
+        nb.append_page(self._ack_page(), Gtk.Label(label="Ack scan"))
+        nb.append_page(self._sizes_page(), Gtk.Label(label="Sizes"))
+        outer.append(nb)
+
+        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        btns.set_halign(Gtk.Align.END)
+        reload_btn = Gtk.Button(label="_Reload", use_underline=True)
+        reload_btn.connect("clicked", self._on_reload)
+        save_btn = Gtk.Button(label="_Save", use_underline=True)
+        save_btn.connect("clicked", self._on_save)
+        rerun_btn = Gtk.Button(label="_Save & re-run dry-run", use_underline=True)
+        rerun_btn.get_style_context().add_class("suggested-action")
+        rerun_btn.connect("clicked", self._on_save_rerun)
+        for b in (reload_btn, save_btn, rerun_btn):
+            btns.append(b)
+        outer.append(btns)
+
+        self.set_child(outer)
+        self.connect("close-request", self._on_close)
+        self._refresh_lists()
+        self._load_show_rules()
+        self.present()
+
+    # -- pages ---------------------------------------------------------------
+
+    def _roots_page(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+
+        f_def = Gtk.Frame(label="Default include roots (untick = [skip-dir])")
+        self._default_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self._default_box.set_margin_top(6)
+        self._default_box.set_margin_bottom(6)
+        self._default_box.set_margin_start(10)
+        self._default_box.set_margin_end(10)
+        self._default_box.append(Gtk.Label(
+            label="<i>loading the default roots from the backend…</i>",
+            use_markup=True, halign=Gtk.Align.START))
+        sc = Gtk.ScrolledWindow()
+        sc.set_min_content_height(190)
+        sc.set_child(self._default_box)
+        f_def.set_child(sc)
+        box.append(f_def)
+
+        f_custom = Gtk.Frame(label="Custom roots ([include-file] / [include-dir])")
+        cust = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        cust.set_margin_top(6)
+        cust.set_margin_bottom(6)
+        cust.set_margin_start(10)
+        cust.set_margin_end(10)
+        self._custom_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        cust.append(self._custom_box)
+        add_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._root_entry = Gtk.Entry()
+        self._root_entry.set_placeholder_text("home-relative path, e.g. Dev/dotfiles")
+        self._root_entry.set_hexpand(True)
+        add_row.append(self._root_entry)
+        self._root_kind = Gtk.ComboBoxText()
+        self._root_kind.append_text("directory (walked)")
+        self._root_kind.append_text("top-level file")
+        self._root_kind.set_active(0)
+        add_row.append(self._root_kind)
+        add_btn = Gtk.Button(label="_Add root")
+        add_btn.set_use_underline(True)
+        add_btn.connect("clicked", self._on_add_root)
+        add_row.append(add_btn)
+        cust.append(add_row)
+        hint = Gtk.Label(
+            label="<small>paths must exist in the home; deny-listed roots are "
+                  "refused by the backend (hard core)</small>",
+            use_markup=True, halign=Gtk.Align.START)
+        cust.append(hint)
+        f_custom.set_child(cust)
+        box.append(f_custom)
+        return box
+
+    def _allow_page(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        f = Gtk.Frame(label="Deny overrides ([allow]) - soft rules only")
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        inner.set_margin_top(6)
+        inner.set_margin_bottom(6)
+        inner.set_margin_start(10)
+        inner.set_margin_end(10)
+        self._allow_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        inner.append(self._allow_box)
+        add_btn = Gtk.Button(label="_Add from current exclusions…")
+        add_btn.set_use_underline(True)
+        add_btn.connect("clicked", self._on_add_allow)
+        inner.append(add_btn)
+        hint = Gtk.Label(
+            label="<small>each add is verified with --explain first: hard-core "
+                  "paths are refused. The backend re-checks every entry on "
+                  "every run.</small>",
+            use_markup=True, halign=Gtk.Align.START, wrap=True)
+        inner.append(hint)
+        f.set_child(inner)
+        box.append(f)
+        return box
+
+    def _ack_page(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        f = Gtk.Frame(label="Scan acknowledgements ([ack-scan]) - exact file paths")
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        inner.set_margin_top(6)
+        inner.set_margin_bottom(6)
+        inner.set_margin_start(10)
+        inner.set_margin_end(10)
+        self._ack_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        inner.append(self._ack_box)
+        add_btn = Gtk.Button(label="_Add from current scan hits…")
+        add_btn.set_use_underline(True)
+        add_btn.connect("clicked", self._on_add_ack)
+        inner.append(add_btn)
+        hint = Gtk.Label(
+            label="<small>ackable rules: %s. Token-shaped / key material "
+                  "(gh-*, private-key, aws-*, google-*, slack-*, stripe-*, "
+                  "jwt, exact PAT hits) can never be acknowledged.</small>"
+                  % esc(", ".join(adapter.ACKABLE_SCAN_RULES)),
+            use_markup=True, halign=Gtk.Align.START, wrap=True)
+        inner.append(hint)
+        f.set_child(inner)
+        box.append(f)
+        return box
+
+    def _sizes_page(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(8)
+        box.set_margin_start(8)
+        grid = Gtk.Grid()
+        grid.set_row_spacing(6)
+        grid.set_column_spacing(10)
+        lbl1 = Gtk.Label(label="Per-file cap ([size] file_cap):", halign=Gtk.Align.START)
+        self._cap_entry = Gtk.Entry()
+        self._cap_entry.set_placeholder_text("e.g. 50M (blank = default)")
+        self._cap_entry.set_text(self.rc.file_cap)
+        grid.attach(lbl1, 0, 0, 1, 1)
+        grid.attach(self._cap_entry, 1, 0, 1, 1)
+        lbl2 = Gtk.Label(label="Total budget ([size] total_budget):", halign=Gtk.Align.START)
+        self._budget_entry = Gtk.Entry()
+        self._budget_entry.set_placeholder_text("e.g. 1G (blank = default)")
+        self._budget_entry.set_text(self.rc.total_budget)
+        grid.attach(lbl2, 0, 1, 1, 1)
+        grid.attach(self._budget_entry, 1, 1, 1, 1)
+        box.append(grid)
+        box.append(Gtk.Label(
+            label="<small>plain bytes or N/NK/NM/NG; values above 100 MiB are "
+                  "refused (GitHub's hard limit); blank keeps the defaults. "
+                  "RICE_TOTAL_MAX_BYTES in the environment still wins for the "
+                  "budget (back-compat).</small>",
+            use_markup=True, halign=Gtk.Align.START, wrap=True))
+        return box
+
+    # -- data flows ------------------------------------------------------------
+
+    def _load_show_rules(self) -> None:
+        argv = adapter.build_command(self.rice.backend_script(),
+                                     home=self.rice.home, show_rules=True)
+        run_backend_async(argv, self._show_rules_done)
+
+    def _show_rules_done(self, rc: int, text: str) -> None:
+        sr = adapter.parse_show_rules(adapter.redact(text, self.rice.pat))
+        if sr.parsed_ok:
+            self.rice.show_rules = sr
+        else:
+            self.status_lbl.set_text(
+                "could not read the default rules from the backend "
+                "(--show-rules exit %d) - root checkboxes unavailable this "
+                "time; the other sections still work" % rc)
+        self._fill_default_roots(sr if sr.parsed_ok else None)
+
+    def _fill_default_roots(self, sr: Optional[adapter.ShowRules]) -> None:
+        clear_box(self._default_box)
+        if sr is None or not sr.parsed_ok:
+            self._default_box.append(Gtk.Label(
+                label="(default roots unavailable)", halign=Gtk.Align.START))
+            return
+        self._default_checks: dict = {}
+        skipped = {r.value for r in sr.skip_dirs}
+        roots = ([(v, True) for v in sr.default_dirs()] +
+                 [(v, False) for v in sr.default_files()])
+        for value, is_dir in sorted(roots):
+            cb = Gtk.CheckButton(label="%s%s" % (value, "  (dir)" if is_dir else ""))
+            cb.set_active(value not in skipped)
+            self._default_checks[value] = cb
+            self._default_box.append(cb)
+        if not roots:
+            self._default_box.append(Gtk.Label(
+                label="(no default roots reported)", halign=Gtk.Align.START))
+        # [skip-dir] entries that match no default root are preserved verbatim
+        self._extra_skip = [r.value for r in sr.skip_dirs
+                            if r.value not in self._default_checks]
+        self._refresh_lists()
+
+    def _refresh_lists(self) -> None:
+        """Re-render the custom-roots / allow / ack rows from self.rc."""
+        rc = self.rc
+        for box in (self._custom_box, self._allow_box, self._ack_box):
+            clear_box(box)
+
+        if not (rc.include_files or rc.include_dirs):
+            self._custom_box.append(Gtk.Label(
+                label="(no custom roots)", halign=Gtk.Align.START))
+        for v in rc.include_dirs:
+            self._custom_box.append(self._removable_row(
+                "%s  [include-dir]" % v, ("include-dir", v)))
+        for v in rc.include_files:
+            self._custom_box.append(self._removable_row(
+                "%s  [include-file]" % v, ("include-file", v)))
+
+        over = self._summary_map("deny overridden")
+        denied = self._summary_map("hard deny list")
+        if not rc.allow:
+            self._allow_box.append(Gtk.Label(
+                label="(no deny overrides)", halign=Gtk.Align.START))
+        for v in rc.allow:
+            if v in over:
+                note = "was: %s (rescued in this dry-run)" % over[v]
+            elif v in denied:
+                note = "was: %s (STILL excluded - see the explain view)" % denied[v]
+            else:
+                note = "not denied in this dry-run (entry inactive)"
+            self._allow_box.append(self._removable_row(
+                "%s  -  %s" % (v, note), ("allow", v)))
+
+        acked = self._summary_map("scan acknowledged")
+        hits = self._summary_map("scan hits")
+        if not rc.ack_scan:
+            self._ack_box.append(Gtk.Label(
+                label="(no scan acknowledgements)", halign=Gtk.Align.START))
+        for v in rc.ack_scan:
+            if v in acked:
+                note = "kept (scan rule: %s)" % acked[v]
+            elif v in hits:
+                note = "STILL excluded (scan rule: %s - ack refused?)" % hits[v]
+            else:
+                note = "no scan hit in this dry-run (entry inactive)"
+            self._ack_box.append(self._removable_row(
+                "%s  -  %s" % (v, note), ("ack-scan", v)))
+
+        if rc.warnings:
+            self.status_lbl.set_text("warnings from the last load: %s"
+                                     % "; ".join(rc.warnings[:4]))
+
+    def _summary_map(self, block_key: str) -> dict:
+        summary = self.rice.summary
+        if summary is None:
+            return {}
+        block = summary.block(block_key)
+        return {p: n for p, n in block.items} if block else {}
+
+    def _removable_row(self, text: str, item: Tuple[str, str]) -> Gtk.Widget:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        lbl = Gtk.Label(label=esc(text), halign=Gtk.Align.START)
+        lbl.set_property("ellipsize", ellipsize_end())
+        lbl.set_hexpand(True)
+        btn = Gtk.Button(label="_Remove")
+        btn.set_use_underline(True)
+        btn.connect("clicked", self._on_remove, item)
+        row.append(lbl)
+        row.append(btn)
+        return row
+
+    # -- actions ---------------------------------------------------------------
+
+    def _on_remove(self, _btn: Gtk.Button, item: Tuple[str, str]) -> None:
+        section, value = item
+        target = {"include-file": self.rc.include_files,
+                  "include-dir": self.rc.include_dirs,
+                  "allow": self.rc.allow,
+                  "ack-scan": self.rc.ack_scan}.get(section, [])
+        if value in target:
+            target.remove(value)
+        self._refresh_lists()
+
+    def _on_add_root(self, _btn: Gtk.Button) -> None:
+        raw = self._root_entry.get_text().strip()
+        kind = "include-dir" if self._root_kind.get_active() == 0 else "include-file"
+        problem = adapter.rules_entry_problem(raw)
+        if problem is not None or not raw:
+            info_dialog(self, "Invalid path",
+                        "The path cannot be used: %s." % (problem or "empty"),
+                        Gtk.MessageType.WARNING)
+            return
+        target = (self.rc.include_dirs if kind == "include-dir"
+                  else self.rc.include_files)
+        if raw not in target:
+            target.append(raw)
+        self._root_entry.set_text("")
+        self._refresh_lists()
+
+    def _on_add_allow(self, _btn: Gtk.Button) -> None:
+        summary = self.rice.summary
+        block = summary.block("hard deny list") if summary else None
+        items = list(block.items) if block else []
+        if not items:
+            info_dialog(self, "Nothing to allow",
+                        "The current dry-run denied no files by name, so there "
+                        "is nothing to re-include.")
+            return
+        picked = choose_from_list(
+            self, "Pick the denied path to re-include", items,
+            hint="each pick is verified with --explain before it is added")
+        if picked is None:
+            return
+        path, rule = picked
+        argv = adapter.build_command(self.rice.backend_script(),
+                                     home=self.rice.home, explain=[path])
+        self.status_lbl.set_text("verifying %s with --explain…" % path)
+
+        def done(rc: int, text: str) -> None:
+            out = adapter.parse_explain(adapter.redact(text, self.rice.pat))
+            row = out.first()
+            if row is None:
+                self.status_lbl.set_text("explain failed (exit %d)" % rc)
+                return
+            stanza, note = adapter.explain_stanza(row)
+            if row.layer == "L1 deny" and "soft rule" in row.override:
+                if not confirm_dialog(
+                        self, "Re-include %s?" % path,
+                        "This path is denied by the SOFT rule %s. An [allow] "
+                        "entry re-includes it in every future run (it is still "
+                        "content-scanned). Add it to rules.conf?" % rule):
+                    self.status_lbl.set_text("cancelled")
+                    return
+                if path not in self.rc.allow:
+                    self.rc.allow.append(path)
+                self.status_lbl.set_text("added [allow] %s (was: %s)" % (path, rule))
+                self._refresh_lists()
+            else:
+                info_dialog(self, "Refused",
+                            "The backend will not let [allow] cover this path: "
+                            "%s. %s" % (row.override or row.rule, note),
+                            Gtk.MessageType.WARNING)
+                self.status_lbl.set_text("refused: %s" % (row.override or row.rule))
+
+        run_backend_async(argv, done)
+
+    def _on_add_ack(self, _btn: Gtk.Button) -> None:
+        summary = self.rice.summary
+        block = summary.block("scan hits") if summary else None
+        items = list(block.items) if block else []
+        if not items:
+            info_dialog(self, "Nothing to acknowledge",
+                        "The current dry-run reported no content-scan hits.")
+            return
+        picked = choose_from_list(
+            self, "Pick the scan hit to acknowledge", items,
+            hint="only heuristic rules can be acknowledged")
+        if picked is None:
+            return
+        path, rule = picked
+        if not adapter.ack_is_allowed(rule):
+            info_dialog(
+                self, "Cannot be acknowledged",
+                "The scan rule %s is token-shaped / key material: it can "
+                "NEVER be acknowledged, not via the GUI, not via rules.conf. "
+                "Rotate or remove the secret instead." % rule,
+                Gtk.MessageType.WARNING)
+            return
+        if not confirm_dialog(
+                self, "Acknowledge the %s hit on %s?" % (rule, path),
+                "Matched rule: %s (heuristic - it over-matches innocuous "
+                "content). Acknowledging KEEPS this file in every future "
+                "backup after your eyes-on review; it is still content-"
+                "scanned, and token-shaped rules stay refused. Add it to "
+                "rules.conf?" % rule):
+            return
+        if path not in self.rc.ack_scan:
+            self.rc.ack_scan.append(path)
+        self.status_lbl.set_text("added [ack-scan] %s (rule: %s)" % (path, rule))
+        self._refresh_lists()
+
+    # -- save / reload -----------------------------------------------------------
+
+    def _collect(self) -> Optional[adapter.RulesConf]:
+        rc = adapter.RulesConf()
+        rc.include_files = list(self.rc.include_files)
+        rc.include_dirs = list(self.rc.include_dirs)
+        rc.allow = list(self.rc.allow)
+        rc.ack_scan = list(self.rc.ack_scan)
+        checks = getattr(self, "_default_checks", {})
+        skipped = [v for v, cb in checks.items() if not cb.get_active()]
+        for v in getattr(self, "_extra_skip", []):
+            if v not in skipped:
+                skipped.append(v)
+        rc.skip_dirs = skipped
+        cap = self._cap_entry.get_text().strip()
+        budget = self._budget_entry.get_text().strip()
+        if cap and adapter.parse_size_text(cap) is None:
+            info_dialog(self, "Invalid file cap",
+                        "'%s' is not a size. Use plain bytes or N/NK/NM/NG."
+                        % cap, Gtk.MessageType.WARNING)
+            return None
+        if budget and adapter.parse_size_text(budget) is None:
+            info_dialog(self, "Invalid total budget",
+                        "'%s' is not a size. Use plain bytes or N/NK/NM/NG."
+                        % budget, Gtk.MessageType.WARNING)
+            return None
+        rc.file_cap = cap
+        rc.total_budget = budget
+        return rc
+
+    def _on_save(self, _btn: Gtk.Button) -> None:
+        rc = self._collect()
+        if rc is None:
+            return
+        try:
+            adapter.write_rules(self.rules_path, rc)
+        except OSError as e:
+            info_dialog(self, "Could not save", str(e), Gtk.MessageType.ERROR)
+            return
+        self.rc = rc
+        self.status_lbl.set_text("saved to %s - every future run reads it"
+                                 % self.rules_path)
+        self._refresh_lists()
+
+    def _on_save_rerun(self, _btn: Gtk.Button) -> None:
+        rc = self._collect()
+        if rc is None:
+            return
+        try:
+            adapter.write_rules(self.rules_path, rc)
+        except OSError as e:
+            info_dialog(self, "Could not save", str(e), Gtk.MessageType.ERROR)
+            return
+        self.rc = rc
+        self.destroy()
+        if self.on_saved is not None:
+            try:
+                self.on_saved()
+            except Exception:
+                pass
+
+    def _on_reload(self, _btn: Gtk.Button) -> None:
+        self.rc = adapter.read_rules(self.rules_path)
+        self._cap_entry.set_text(self.rc.file_cap)
+        self._budget_entry.set_text(self.rc.total_budget)
+        self.status_lbl.set_text("reloaded from %s" % self.rules_path)
+        self._refresh_lists()
+        self._load_show_rules()
+
+    def _on_close(self, _win) -> bool:
+        return False
+
 
 class ResultWindow(Gtk.ApplicationWindow):
 
@@ -1142,6 +1959,8 @@ class RiceGuiApp(Gtk.Application):
         self.summary = None
         self.entries: list = []
         self.windows: dict = {}
+        self.rules_path = adapter.rules_default_path()   # R5 rules.conf
+        self.show_rules: Optional[adapter.ShowRules] = None  # --show-rules cache
         self._pending_export_path: Optional[str] = None
         self.connect("shutdown", self._on_shutdown)
 
@@ -1152,6 +1971,21 @@ class RiceGuiApp(Gtk.Application):
 
     def backend_script(self) -> Path:
         return self.toolroot / "bin" / "rice-backup.sh"
+
+    def load_show_rules(self) -> None:
+        """Fire-and-forget --show-rules (offline): warms the cache the
+        explain view uses to gate include-root stanzas on the deny dirs."""
+        if self.show_rules is not None:
+            return
+        argv = adapter.build_command(self.backend_script(), home=self.home,
+                                     show_rules=True)
+
+        def _done(rc: int, text: str) -> None:
+            sr = adapter.parse_show_rules(adapter.redact(text, self.pat))
+            if sr.parsed_ok:
+                self.show_rules = sr
+
+        run_backend_async(argv, _done)
 
     def save_conf(self) -> None:
         try:
@@ -1229,8 +2063,9 @@ def main(argv: Optional[Sequence[str]] = None,
     warning = ""
     if not adapter.backend_new_enough(root):
         warning = ("backend %s found, %s needed: selection (--exclude-from), "
-                   "archive export (--export) and the candidate list "
-                   "(--list-files) require rice-backup %s or newer"
+                   "archive export (--export), the candidate list "
+                   "(--list-files), the rules editor (--show-rules) and the "
+                   "explain view (--explain) require rice-backup %s or newer"
                    % (adapter.backend_version(root) or "?",
                       adapter.MIN_BACKEND_VERSION, adapter.MIN_BACKEND_VERSION))
         print("[rice-gui] WARNING: %s" % warning, file=sys.stderr)

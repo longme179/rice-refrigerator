@@ -219,7 +219,7 @@ a link to a soft-allowed target follows only if the target itself is allowed.
 | R2 | rules.conf + roots + sizes + `--rules/--no-rules`, flags, version 0.4.0 | D38+D39+D42 size part | t27 | ✅ done (suite 447/0, contract rig OK) |
 | R3 | allow-list + hard core + ALLOWED.md | D40 | t28 | ✅ done (suite 475/0) |
 | R4 | ack-scan + expect flow + hook + ACKNOWLEDGED.md | D41 | t29 | ✅ done (suite 516/0) |
-| R5 | GUI Rules tab + explain view + docs + 0.4.0 tarball | §8 | adapter tests + checklist | pending |
+| R5 | GUI Rules tab + explain view + docs + 0.4.0 tarball | §8 | adapter tests + checklist | ✅ code done (suite 516/0, t24 = 82 adapter tests, contract rig ALL OK; tarball in download/) |
 
 Each milestone: suite green (old assertions unmodified where the feature
 permits) → S4 tree+range scan → commit → push → journal updated.

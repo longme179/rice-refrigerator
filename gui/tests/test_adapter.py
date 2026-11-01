@@ -254,6 +254,27 @@ class TestParseDryRun(unittest.TestCase):
         self.assertNotIn("deny overridden", names)
         self.assertNotIn("scan acknowledged", names)
 
+    def test_override_ack_blocks_parsed_as_blocks(self):
+        # R5: "deny overridden" / "scan acknowledged" are FIRST-CLASS excluded
+        # blocks now (their own notebook pages in the review window).
+        text = DRYRUN_NORMAL.replace(
+            "  oversized (>50 MiB): 1 item(s)",
+            "  deny overridden : 1 item(s)\n"
+            "    - .bash_history [deny-file:.bash_history]\n"
+            "  scan acknowledged : 1 item(s)\n"
+            "    - .config/myapp/token.ini [cred-assign]\n"
+            "  oversized (>50 MiB): 1 item(s)")
+        s = adapter.parse_dry_run(text)
+        self.assertTrue(s.parsed_ok)
+        ov = s.block("deny overridden")
+        self.assertIsNotNone(ov)
+        self.assertEqual(ov.count, 1)
+        self.assertEqual(ov.items, [(".bash_history", "deny-file:.bash_history")])
+        ac = s.block("scan acknowledged")
+        self.assertIsNotNone(ac)
+        self.assertEqual(ac.items, [(".config/myapp/token.ini", "cred-assign")])
+        self.assertFalse(ac.truncated)
+
     def test_symlinks_line_absent_keeps_zeros(self):
         s = adapter.parse_dry_run(DRYRUN_NORMAL)
         self.assertEqual(s.links_followed, 0)
@@ -664,6 +685,453 @@ class TestBackendVersion(unittest.TestCase):
         self.assertRegex(v, r"^0\.\d+\.\d+$")
         self.assertTrue(adapter.backend_new_enough(root))
         self.assertGreaterEqual(adapter.version_tuple(v), (0, 2, 0))
+
+
+# ---------------------------------------------------------------------------
+# rules.conf read/write (R5, mirrors lib/collect.sh rice_rules_*)
+# ---------------------------------------------------------------------------
+
+class TestRulesIO(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_default_path_xdg_and_base(self):
+        old = os.environ.get("XDG_CONFIG_HOME")
+        try:
+            os.environ["XDG_CONFIG_HOME"] = os.path.join(self.base, "cfg")
+            p = adapter.rules_default_path()
+            self.assertEqual(p, Path(self.base) / "cfg" / "rice-backup" / "rules.conf")
+            p2 = adapter.rules_default_path(base=os.path.join(self.base, "app"))
+            self.assertEqual(p2, Path(self.base) / "app" / "rules.conf")
+        finally:
+            if old is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old
+
+    def test_entry_problem_mirrors_backend(self):
+        self.assertIsNone(adapter.rules_entry_problem(".bash_history"))
+        self.assertIsNone(adapter.rules_entry_problem("  Dev/dotfiles # note "))
+        self.assertIsNotNone(adapter.rules_entry_problem("/abs/path"))
+        self.assertIsNotNone(adapter.rules_entry_problem("a/../b"))
+        self.assertIsNotNone(adapter.rules_entry_problem("."))
+        self.assertIsNotNone(adapter.rules_entry_problem(""))
+        self.assertIsNotNone(adapter.rules_entry_problem("   # only comment"))
+
+    def test_parse_size_text_mirrors_backend(self):
+        self.assertEqual(adapter.parse_size_text("1024"), 1024)
+        self.assertEqual(adapter.parse_size_text("50M"), 50 * 1024 ** 2)
+        self.assertEqual(adapter.parse_size_text("2G"), 2 * 1024 ** 3)
+        self.assertEqual(adapter.parse_size_text("10k"), 10 * 1024)
+        self.assertEqual(adapter.parse_size_text("20MiB"), 20 * 1024 ** 2)
+        self.assertEqual(adapter.parse_size_text("1 GiB"), 1024 ** 3)
+        self.assertIsNone(adapter.parse_size_text("10X"))
+        self.assertIsNone(adapter.parse_size_text("abc"))
+        self.assertIsNone(adapter.parse_size_text(""))
+        self.assertIsNone(adapter.parse_size_text("M"))
+
+    def test_parse_rules_text_full_sections(self):
+        rc = adapter.parse_rules_text(
+            "# header comment\n"
+            "[include-file]\n.Xresources\n\n"
+            "[INCLUDE-DIR]\nDev/dotfiles\nDev/dotfiles\n\n"
+            "[skip-dir]\n.local/share/wallpapers\n\n"
+            "[allow]\n.bash_history\n\n"
+            "[ack-scan]\n.config/myapp/token.ini\n\n"
+            "[size]\nfile_cap = 50M\ntotal_budget = 2G\n")
+        self.assertEqual(rc.include_files, [".Xresources"])   # section case-insensitive
+        self.assertEqual(rc.include_dirs, ["Dev/dotfiles"])   # dedupe keeps first
+        self.assertEqual(rc.skip_dirs, [".local/share/wallpapers"])
+        self.assertEqual(rc.allow, [".bash_history"])
+        self.assertEqual(rc.ack_scan, [".config/myapp/token.ini"])
+        self.assertEqual(rc.file_cap, "50M")
+        self.assertEqual(rc.total_budget, "2G")
+        self.assertEqual(rc.warnings, [])
+
+    def test_parse_rules_text_warnings(self):
+        rc = adapter.parse_rules_text(
+            "[bogus]\nnope\n"
+            "free_entry\n"
+            "key = value\n"
+            "[size]\nfile_cap = banana\nunknown = 1\n"
+            "[allow]\n/../escape\n")
+        self.assertEqual(rc.allow, [])
+        self.assertEqual(rc.file_cap, "")
+        self.assertEqual(len(rc.warnings), 7)  # bogus section; two entries
+        # outside a section; key=value outside [size]; bad size value;
+        # unknown [size] key; the invalid /../escape entry
+        joined = "; ".join(rc.warnings)
+        self.assertIn("unknown section", joined)
+        self.assertIn("outside a known section", joined)
+        self.assertIn("outside [size]", joined)
+        self.assertIn("invalid file_cap", joined)
+        self.assertIn("unknown [size] key", joined)
+
+    def test_render_parse_roundtrip(self):
+        rc = adapter.RulesConf()
+        rc.include_dirs = ["Dev/dotfiles", "Notes"]
+        rc.skip_dirs = [".local/share/wallpapers"]
+        rc.allow = [".bash_history"]
+        rc.ack_scan = [".config/myapp/token.ini"]
+        rc.file_cap = "50M"
+        rc.total_budget = "2G"
+        text = adapter.render_rules(rc)
+        self.assertIn("[include-dir]", text)
+        self.assertIn("file_cap = 50M", text)
+        again = adapter.parse_rules_text(text)
+        self.assertEqual(again, adapter.parse_rules_text(adapter.render_rules(again)))
+        self.assertEqual(again.include_dirs, rc.include_dirs)
+        self.assertEqual(again.skip_dirs, rc.skip_dirs)
+        self.assertEqual(again.allow, rc.allow)
+        self.assertEqual(again.ack_scan, rc.ack_scan)
+        self.assertEqual(again.file_cap, "50M")
+        self.assertEqual(again.total_budget, "2G")
+
+    def test_read_missing_is_empty_never_raises(self):
+        rc = adapter.read_rules(Path(self.base) / "nope" / "rules.conf")
+        self.assertEqual(rc, adapter.RulesConf())
+
+    def test_write_rules_private_modes(self):
+        path = Path(self.base) / "rice-backup" / "rules.conf"
+        rc = adapter.RulesConf()
+        rc.allow = [".bash_history"]
+        adapter.write_rules(path, rc)
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(path.parent).st_mode), 0o700)
+        back = adapter.read_rules(path)
+        self.assertEqual(back.allow, [".bash_history"])
+
+
+# ---------------------------------------------------------------------------
+# --show-rules parsing (R5)
+# ---------------------------------------------------------------------------
+
+SHOW_RULES_LOADED = """\
+=== rice-backup effective rules ===
+version     : 0.4.0
+rules file  : /home/tester/.config/rice-backup/rules.conf (loaded)
+file cap    : 50 MiB per file (GitHub rejects files >100 MiB)
+total budget: 1 GiB (a real run above it needs --allow-oversize)
+symlinks    : follow=1 outside-home=0
+
+include files (top-level, exact name under the home):
+  .bashrc                         (default)
+  .Xresources                     (rules.conf)
+
+include dirs (walked recursively):
+  .config                         (default)
+  .local                          (default)
+  Dev/dotfiles                    (rules.conf)
+
+skipped include roots ([skip-dir], not walked at all):
+  .local/share/wallpapers         (default)
+
+deny dirs (L1, path prefixes; hard = never overridable via [allow]):
+  .ssh                            (hard)
+  .config/mozilla                 (hard)
+  .config/discord                 (soft)
+
+deny file globs (L1, matched against the whole path):
+  *history*                       (soft)
+  *.pem                           (hard)
+
+allow overrides ([allow]/--allow, soft rules only):
+  .bash_history                   (rules.conf)
+  .zsh_history                    (flag)
+
+scan acknowledgements ([ack-scan], exact file paths only):
+  .config/myapp/token.ini         (rules.conf)
+  ackable rules: cred-assign, bearer-token, url-embedded-creds,
+  aws-secret-label - token-shaped rules are always refused
+
+cache/junk patterns (L3): .cache/**, */cache|Cache|caches/**,
+  node_modules, __pycache__, .npm, .git, Trash, .config/fcitx/dbus, *.log
+
+/etc allowlist (only with --include-system):
+  /etc/dconf/db/local
+  /etc/systemd/system
+
+notes: deny rules are NAME-based. --explain PATH reports which layer
+and rule claims any given path.
+"""
+
+
+class TestShowRules(unittest.TestCase):
+
+    def test_defaults_only_shape(self):
+        text = SHOW_RULES_LOADED.replace(
+            "rules file  : /home/tester/.config/rice-backup/rules.conf (loaded)",
+            "rules file  : (none - defaults only; create "
+            "/home/tester/.config/rice-backup/rules.conf to customize)")
+        sr = adapter.parse_show_rules(text)
+        self.assertTrue(sr.parsed_ok)
+        self.assertEqual(sr.rules_file, "")
+        self.assertEqual(sr.version, "0.4.0")
+
+    def test_loaded_shape(self):
+        sr = adapter.parse_show_rules(SHOW_RULES_LOADED)
+        self.assertTrue(sr.parsed_ok)
+        self.assertEqual(sr.rules_file,
+                         "/home/tester/.config/rice-backup/rules.conf")
+        self.assertEqual(sr.file_cap, "50 MiB")
+        self.assertEqual(sr.total_budget, "1 GiB")
+        self.assertTrue(sr.follow)
+        self.assertFalse(sr.follow_outside)
+        self.assertIn(adapter.RuleRow(".bashrc", "default"), sr.include_files)
+        self.assertIn(adapter.RuleRow(".Xresources", "rules.conf"),
+                      sr.include_files)
+        self.assertIn(adapter.RuleRow("Dev/dotfiles", "rules.conf"),
+                      sr.include_dirs)
+        self.assertIn(adapter.RuleRow(".config", "default"), sr.include_dirs)
+        self.assertEqual(sr.default_dirs(), [".config", ".local"])
+        self.assertEqual(sr.default_files(), [".bashrc"])
+        self.assertEqual([r.value for r in sr.skip_dirs],
+                         [".local/share/wallpapers"])
+        hard_dirs = [r.value for r in sr.deny_dirs if r.note == "hard"]
+        soft_dirs = [r.value for r in sr.deny_dirs if r.note == "soft"]
+        self.assertIn(".ssh", hard_dirs)
+        self.assertIn(".config/mozilla", hard_dirs)
+        self.assertEqual(soft_dirs, [".config/discord"])
+        hard_globs = [r.value for r in sr.deny_globs if r.note == "hard"]
+        self.assertEqual(hard_globs, ["*.pem"])
+        self.assertIn(adapter.RuleRow(".bash_history", "rules.conf"), sr.allow)
+        self.assertIn(adapter.RuleRow(".zsh_history", "flag"), sr.allow)
+        self.assertEqual([r.value for r in sr.ack],
+                         [".config/myapp/token.ini"])
+        self.assertEqual(sr.etc_allow, ["/etc/dconf/db/local",
+                                        "/etc/systemd/system"])
+
+    def test_garbage_is_not_fatal(self):
+        sr = adapter.parse_show_rules("total garbage\nno header\n")
+        self.assertFalse(sr.parsed_ok)
+        self.assertEqual(sr.include_dirs, [])
+
+    def test_entry_with_spaces_and_parens(self):
+        text = SHOW_RULES_LOADED.replace(
+            "  Dev/dotfiles                    (rules.conf)",
+            "  my dir (x)                      (rules.conf)")
+        sr = adapter.parse_show_rules(text)
+        self.assertIn(adapter.RuleRow("my dir (x)", "rules.conf"),
+                      sr.include_dirs)
+
+
+# ---------------------------------------------------------------------------
+# --explain parsing (R5)
+# ---------------------------------------------------------------------------
+
+EXPLAIN_MULTI = """\
+[rice-backup] collecting candidates from /home/tester (originals are read-only)...
+[rice-backup] content-scanning 24 candidate file(s) with the S4 rules...
+=== rice-backup explain ===
+home : /home/tester
+.bash_history
+      verdict  : excluded
+      layer    : L1 deny
+      rule     : deny-file:.bash_history
+      override : soft rule - [allow] can re-include it
+.ssh/id_rsa
+      verdict  : not considered
+      layer    : include roots
+      rule     : outside every include root (see --show-rules)
+.config/myapp/token.ini
+      verdict  : excluded
+      layer    : L2 scan
+      rule     : scan:cred-assign
+      override : heuristic rule - [ack-scan] can acknowledge it
+/dev/abs/path
+      verdict  : not explainable
+      rule     : absolute path outside the home
+.config/acked.ini
+      verdict  : included
+      layer    : L2 scan
+      rule     : scan:cred-assign - acknowledged via [ack-scan], kept after review
+      override : acknowledged via [ack-scan] (heuristic rule, eyes-on decision)
+[rice-backup] explain complete: read-only, nothing was staged or pushed.
+"""
+
+
+class TestExplain(unittest.TestCase):
+
+    def test_multi_path_parse(self):
+        out = adapter.parse_explain(EXPLAIN_MULTI)
+        self.assertTrue(out.parsed_ok)
+        self.assertEqual(out.home, "/home/tester")
+        by = {r.path: r for r in out.rows}
+        self.assertEqual(len(out.rows), 5)
+        bh = by[".bash_history"]
+        self.assertEqual(bh.verdict, "excluded")
+        self.assertEqual(bh.layer, "L1 deny")
+        self.assertEqual(bh.rule, "deny-file:.bash_history")
+        self.assertIn("soft rule", bh.override)
+        srk = by[".ssh/id_rsa"]
+        self.assertEqual(srk.verdict, "not considered")
+        self.assertEqual(srk.layer, "include roots")
+        tk = by[".config/myapp/token.ini"]
+        self.assertEqual(tk.layer, "L2 scan")
+        self.assertEqual(tk.rule, "scan:cred-assign")
+        self.assertIn("heuristic rule", tk.override)
+        absrow = by["/dev/abs/path"]
+        self.assertEqual(absrow.verdict, "not explainable")
+        self.assertEqual(absrow.layer, "")            # layer line absent
+        acked = by[".config/acked.ini"]
+        self.assertEqual(acked.verdict, "included")
+        self.assertIn("acknowledged", acked.override)
+        self.assertEqual(out.first(), bh)
+
+    def test_noise_lines_never_become_rows(self):
+        out = adapter.parse_explain(EXPLAIN_MULTI)
+        for r in out.rows:
+            self.assertFalse(r.path.startswith("[rice-backup]"))
+            self.assertNotIn("explain complete", r.path)
+
+    def test_garbage_is_not_fatal(self):
+        out = adapter.parse_explain("nothing here\n")
+        self.assertFalse(out.parsed_ok)
+        self.assertEqual(out.rows, [])
+        self.assertIsNone(out.first())
+
+
+# ---------------------------------------------------------------------------
+# ack rails mirror + explain -> stanza (R5)
+# ---------------------------------------------------------------------------
+
+class TestAckRails(unittest.TestCase):
+
+    def test_only_heuristic_rules_are_ackable(self):
+        for rule in adapter.ACKABLE_SCAN_RULES:
+            self.assertTrue(adapter.ack_is_allowed(rule), rule)
+        for rule in ("gh-classic", "gh-fine-grained", "private-key",
+                     "aws-access-key", "google-api-key", "slack-token",
+                     "stripe-live-key", "jwt", "exact", ""):
+            self.assertFalse(adapter.ack_is_allowed(rule), rule)
+
+    def test_rules_stanza_sections(self):
+        self.assertEqual(adapter.rules_stanza("allow", [".bash_history"]),
+                         "[allow]\n.bash_history\n")
+        self.assertEqual(adapter.rules_stanza("ack-scan", ["a", "b"]),
+                         "[ack-scan]\na\nb\n")
+        with self.assertRaises(ValueError):
+            adapter.rules_stanza("bogus", ["x"])
+
+
+class TestExplainStanza(unittest.TestCase):
+
+    def _row(self, layer, rule="", override="", path=".bash_history",
+             verdict="excluded"):
+        return adapter.ExplainRow(path=path, verdict=verdict, layer=layer,
+                                  rule=rule, override=override)
+
+    def test_l1_soft_offers_allow(self):
+        row = self._row("L1 deny", "deny-file:.bash_history",
+                        "soft rule - [allow] can re-include it")
+        stanza, note = adapter.explain_stanza(row)
+        self.assertEqual(stanza, "[allow]\n.bash_history\n")
+        self.assertIn("soft rule", note)
+
+    def test_l1_hard_refused(self):
+        row = self._row("L1 deny", "deny-glob:*.pem",
+                        "override : HARD CORE - never overridable via [allow]"
+                        .replace("override : ", ""))
+        stanza, note = adapter.explain_stanza(row)
+        self.assertEqual(stanza, "")
+        self.assertIn("hard core", note)
+
+    def test_l2_heuristic_offers_ack(self):
+        row = self._row("L2 scan", "scan:cred-assign",
+                        "heuristic rule - [ack-scan] can acknowledge it",
+                        path=".config/myapp/token.ini")
+        stanza, note = adapter.explain_stanza(row)
+        self.assertEqual(stanza, "[ack-scan]\n.config/myapp/token.ini\n")
+        self.assertIn("eyes-on review", note)
+
+    def test_l2_token_shaped_refused(self):
+        for override in ("NEVER acknowledgeable - token-shaped or key material",
+                         "ack REFUSED - gh-fine-grained is token-shaped/key "
+                         "material, never acknowledgeable"):
+            row = self._row("L2 scan", "scan:gh-fine-grained", override)
+            stanza, note = adapter.explain_stanza(row)
+            self.assertEqual(stanza, "")
+            self.assertIn("token-shaped", note)
+
+    def test_l2_already_acknowledged_points_at_removal(self):
+        row = self._row("L2 scan", "scan:cred-assign",
+                        "acknowledged via [ack-scan] (heuristic rule, "
+                        "eyes-on decision)", verdict="included")
+        stanza, note = adapter.explain_stanza(row)
+        self.assertEqual(stanza, "")
+        self.assertIn("remove the [ack-scan] entry", note)
+
+    def test_include_roots_dir(self):
+        row = self._row("include roots", "outside every include root",
+                        path="Dev/notes/todo.txt", verdict="not considered")
+        stanza, note = adapter.explain_stanza(row)
+        self.assertEqual(stanza, "[include-dir]\nDev/notes\n")
+        stanza, note = adapter.explain_stanza(row, deny_dirs=[".ssh"])
+        self.assertEqual(stanza, "[include-dir]\nDev/notes\n")
+
+    def test_include_roots_under_deny_dir_refused(self):
+        row = self._row("include roots", "outside every include root",
+                        path=".ssh/id_rsa", verdict="not considered")
+        stanza, note = adapter.explain_stanza(row, deny_dirs=[".ssh"])
+        self.assertEqual(stanza, "")
+        self.assertIn("deny dir .ssh", note)
+        # case-insensitive prefix match (backend lowercases deny dirs)
+        deep = self._row("include roots", "outside every include root",
+                         path=".Config/Mozilla/prefs.js", verdict="not considered")
+        stanza, note = adapter.explain_stanza(deep, deny_dirs=[".config/mozilla"])
+        self.assertEqual(stanza, "")
+        self.assertIn("deny dir .config/mozilla", note)
+
+    def test_include_roots_toplevel_file(self):
+        row = self._row("include roots", "outside every include root",
+                        path=".Xresources", verdict="not considered")
+        stanza, note = adapter.explain_stanza(row)
+        self.assertEqual(stanza, "[include-file]\n.Xresources\n")
+
+    def test_size_cap_and_unknown_offer_nothing(self):
+        row = self._row("size cap", "larger than 50 MiB (60 MiB)",
+                        verdict="skipped")
+        stanza, note = adapter.explain_stanza(row)
+        self.assertEqual(stanza, "")
+        self.assertIn("file_cap", note)
+        row = self._row("selection", "--exclude-from entry")
+        self.assertEqual(adapter.explain_stanza(row), ("", ""))
+
+
+# ---------------------------------------------------------------------------
+# build_command: --show-rules / --explain (R5)
+# ---------------------------------------------------------------------------
+
+class TestBuildCommandRules(unittest.TestCase):
+
+    def test_show_rules_offline_no_repo(self):
+        argv = adapter.build_command("/opt/rice-backup.sh", show_rules=True,
+                                     repo="test/backup", home="/home/t")
+        self.assertEqual(argv, ["bash", "/opt/rice-backup.sh",
+                                "--show-rules", "--home", "/home/t"])
+
+    def test_explain_paths_come_last(self):
+        argv = adapter.build_command("/opt/rice-backup.sh",
+                                     explain=[".bash_history", ".ssh/id_rsa"],
+                                     repo="test/backup", home="/home/t")
+        self.assertEqual(argv, ["bash", "/opt/rice-backup.sh",
+                                "--home", "/home/t",
+                                "--explain", ".bash_history", ".ssh/id_rsa"])
+        # every argument after --explain is a path: nothing may follow them
+        self.assertEqual(argv[argv.index("--explain"):],
+                         ["--explain", ".bash_history", ".ssh/id_rsa"])
+
+    def test_dry_run_still_gets_repo(self):
+        argv = adapter.build_command("/opt/rice-backup.sh", dry_run=True,
+                                     repo="test/backup", home="/home/t")
+        self.assertIn("--repo", argv)
+        self.assertNotIn("--explain", argv)
+        self.assertNotIn("--show-rules", argv)
 
 
 if __name__ == "__main__":

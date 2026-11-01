@@ -188,6 +188,16 @@ summary (`scan acknowledged : N item(s)`), recorded in
 acknowledgement survives every later S4 scan of the backup repo. `--explain
 PATH` shows for any scan hit whether it is ackable before you decide.
 
+**GUI (0.4.0):** everything above has a point-and-click surface — the review
+window's **Rules** tab opens the rules editor (default-root checkboxes,
+custom roots, the `[allow]` editor with each entry's original deny rule, the
+`[ack-scan]` editor gated behind a confirmation that names the matched rule,
+the `[size]` caps), and double-clicking any excluded row opens the **explain
+view** with the verdict chain and the exact stanza to copy. The GUI enforces
+the same rails as the backend (hard core and token-shaped refusals are
+never offered) and every add of an `[allow]` entry is verified with
+`--explain` first. See `gui/README-GUI.md`.
+
 ### Selecting what gets backed up (`--exclude-from`)
 
 The selection file is a plain list of home-relative paths, one per line

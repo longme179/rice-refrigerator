@@ -95,6 +95,55 @@ check("export rc 0", r5.returncode == 0, r5.stderr[-300:])
 check("parse_result export", res is not None and res[0] == "export"
       and res[2] == str(tw / "arch.tar.gz"), str(res))
 
+# 7. R5: --show-rules -> parse_show_rules (defaults shape)
+r6 = run(["--show-rules", "--home", tw / "home"])
+sr = adapter.parse_show_rules(r6.stdout + r6.stderr)
+check("show-rules rc 0", r6.returncode == 0, r6.stderr[-300:])
+check("show-rules parsed_ok", sr.parsed_ok)
+check("show-rules version 0.4.0", sr.version == "0.4.0", sr.version)
+check("show-rules no rules file", sr.rules_file == "", sr.rules_file)
+check("show-rules default dirs", ".config" in sr.default_dirs(), str(sr.default_dirs()[:4]))
+check("show-rules hard deny .ssh", any(r.value == ".ssh" and r.note == "hard" for r in sr.deny_dirs))
+check("show-rules soft deny *history*", any(r.value == "*history*" and r.note == "soft" for r in sr.deny_globs))
+deny_dirs = [r.value for r in sr.deny_dirs]
+
+# 8. R5: --explain -> parse_explain + explain_stanza rails
+r7 = run(["--explain", ".config/myapp/token.ini", ".bash_history", ".ssh/id_rsa",
+          "--home", tw / "home"])
+ex = adapter.parse_explain(r7.stdout + r7.stderr)
+check("explain rc 0", r7.returncode == 0, r7.stderr[-300:])
+check("explain parsed_ok", ex.parsed_ok)
+check("explain 3 rows", len(ex.rows) == 3, str([r.path for r in ex.rows]))
+by = {r.path: r for r in ex.rows}
+check("explain token.ini L2 cred-assign",
+      by[".config/myapp/token.ini"].layer == "L2 scan"
+      and by[".config/myapp/token.ini"].rule == "scan:cred-assign",
+      str(by.get(".config/myapp/token.ini")))
+st, _note = adapter.explain_stanza(by[".config/myapp/token.ini"], deny_dirs)
+check("stanza offers ack for heuristic hit",
+      st == "[ack-scan]\n.config/myapp/token.ini\n", st)
+check("explain .bash_history soft L1",
+      by[".bash_history"].layer == "L1 deny" and "soft rule" in by[".bash_history"].override)
+st, _note = adapter.explain_stanza(by[".bash_history"], deny_dirs)
+check("stanza offers allow for soft deny", st == "[allow]\n.bash_history\n", st)
+st, note = adapter.explain_stanza(by[".ssh/id_rsa"], deny_dirs)
+check("stanza refuses deny-dir child", st == "" and "deny dir .ssh" in note, note)
+
+# 9. R5: adapter-written rules.conf drives the real backend (allow + ack)
+rules = tw / "rules.conf"
+adapter.write_rules(rules, adapter.parse_rules_text(
+    "[allow]\n.bash_history\n\n[ack-scan]\n.config/myapp/token.ini\n\n"
+    "[size]\nfile_cap = 50M\n"))
+r8 = run(["--dry-run", "--repo", "test/backup", "--rules", str(rules),
+          "--home", tw / "home"])
+s8 = adapter.parse_dry_run(r8.stdout + r8.stderr)
+check("rules dry-run rc 0", r8.returncode == 0, r8.stderr[-300:])
+ov, ac = s8.block("deny overridden"), s8.block("scan acknowledged")
+check("deny overridden block parsed", ov is not None and ov.count == 1
+      and any(p == ".bash_history" for p, _n in ov.items), str(ov))
+check("scan acknowledged block parsed", ac is not None and ac.count == 1
+      and any(p == ".config/myapp/token.ini" for p, _n in ac.items), str(ac))
+
 print()
 print("contract check: %s" % ("ALL OK" if not fails else "FAILURES: %s" % fails))
 sys.exit(1 if fails else 0)
