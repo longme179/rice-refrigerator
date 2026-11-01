@@ -353,15 +353,12 @@ over recollection. Never write secrets here.
 
 ## Session 9 — 2026-11-01 (deep customization: D38–D42 planned, then R1–R5)
 
-## NEXT ACTION (write-ahead) — session 9, current
-1. R5 CODE DONE: commit + push (S4 tree scan unexpected=0 already verified).
-2. Rebuild download/rice-backup-0.4.0.tar.gz from the pushed HEAD (git
-   archive), re-verify the suite FROM the extracted tarball, refresh
-   download/README.md for 0.4.0, then close session 9 (final user report vi).
-3. User real-machine follow-ups (unchanged): 0.3.0 re-run results, GUI
-   checklist (now items 1–14 incl. the Rules tab + explain view),
-   .config/mango/scripts/networks.py inspection (solvable via [ack-scan] if
-   it is a false positive), still-public repo reminder.
+## NEXT ACTION (write-ahead) — session 9 CLOSED
+1. Nothing pending: R5 pushed as 1409e7e, closure record pushed after this
+   edit; tarball download/rice-backup-0.4.0.tar.gz verified from the
+   extracted copy (516/0 + contract rig ALL OK); download/README.md updated.
+2. Next session: real-machine 0.4.0 verification (see NEXT SESSION bootstrap
+   below).
 
 ## Session-9 result log (append-only)
 - [s9] RAN bootstrap: main == origin/main == a77a1b5, tree clean; fixtures
@@ -430,7 +427,11 @@ over recollection. Never write secrets here.
   README GUI paragraph; suite **516/0**, S4 tree unexpected=0. Found+fixed
   in self-review: choose_from_list missing loop.run() (returned immediately),
   _extra_skip early-Save race, show-rules cache wipe on failed rerun.
-  Committing + pushing next; then the 0.4.0 tarball into download/.
+  PUSHED as 1409e7e (pre-push hook live: unexpected=0, exact=on). Tarball
+  download/rice-backup-0.4.0.tar.gz built from 1409e7e (git archive, 174
+  files), re-verified FROM THE EXTRACTED COPY (suite 516/0, contract rig
+  ALL OK, journal md5 identical to HEAD); download/README.md rewritten for
+  0.4.0. SESSION 9 CLOSED: D38–D42 fully landed, R1–R5 all ✅.
 
 ## NEXT SESSION bootstrap (when the user returns)
 1. Standard four checks (see "Checks to re-run" above). Expected: origin/main
