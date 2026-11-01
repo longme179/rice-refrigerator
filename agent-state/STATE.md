@@ -354,18 +354,16 @@ over recollection. Never write secrets here.
 ## Session 9 — 2026-11-01 (deep customization: D38–D42 planned, then R1–R5)
 
 ## NEXT ACTION (write-ahead) — session 9, current
-1. Plan docs: RULES-PLAN.md + DECISIONS D38–D42 + journal 09 + this section;
-   S4 gate; commit; push.
-2. R1 diagnostics (no behavior change): rice_show_rules + rice_explain in
-   lib/collect.sh; --explain/--show-rules in bin/rice-backup.sh (offline,
-   read-only); tests t26; green -> S4 -> commit -> push.
-3. R2 rules.conf + include/skip roots + size flags (--rules/--no-rules,
-   version 0.4.0); t27. R3 [allow] + hard core + ALLOWED.md; t28.
-   R4 [ack-scan] + expect flow + hook + ACKNOWLEDGED.md; t29.
-4. R5 GUI Rules tab + explain view + docs + 0.4.0 tarball into download/.
-5. Each milestone: suite green -> S4 tree+range -> commit -> push -> journal 09
-   result log updated. If the context runs out, the journal's NEXT ACTION is
-   the resume point (D31 discipline).
+1. R5 (final milestone): GUI Rules tab (rules.conf editor: default-roots
+   checkboxes -> [skip-dir], add-root/add-file entries, [allow] editor showing
+   each entry's ORIGINAL deny rule, [ack-scan] editor gated by the rail policy
+   with token-shaped rules shown as "cannot be acknowledged") + explain view
+   on excluded rows (adapter explain() + rules-file helpers) + gui/README-GUI
+   checklist addition; adapter tests extended; then REBUILD the 0.4.0 tarball
+   into download/ + update download/README.md (D38–D42 complete).
+2. User real-machine follow-ups (unchanged): 0.3.0 re-run results, GUI
+   checklist, .config/mango/scripts/networks.py inspection (now solvable via
+   [ack-scan] if it is a false positive), still-public repo reminder.
 
 ## Session-9 result log (append-only)
 - [s9] RAN bootstrap: main == origin/main == a77a1b5, tree clean; fixtures
@@ -397,9 +395,29 @@ over recollection. Never write secrets here.
   override lines + show-rules hard/soft marks; t28; suite **475/0**.
   Found+fixed: rescue must bypass L1 (rice_consider nodeny arg) else rescued
   files are re-denied; tooling quirk #3: $'\t' escapes in Edit new_str can
-  arrive as spaces (use runtime printf tabs + byte-checks). PUSHING next;
-  remaining: R4 (ack-scan + expect/hook flow), R5 (GUI Rules tab + 0.4.0
-  tarball).
+  arrive as spaces (use runtime printf tabs + byte-checks). PUSHED as 24b8d67
+  (S4 clean, hook live).
+- [s9] RAN R4 milestone ([ack-scan], D41): [ack-scan] loader arm (RICE_ACK)
+  + rice_ack_is_allowed rails (ackable: cred-assign/bearer-token/
+  url-embedded-creds/aws-secret-label; NEVER: gh-*/private-key/aws-access-key/
+  google-api-key/slack-token/stripe-live-key/jwt/exact); rice_scan_candidates
+  keeps acked soft-rule hits in RICE_INCLUDE + RICE_SCAN_ACKED (bytes/metadata
+  kept) and REFUSES never-ackable acks with the rule named; unmatched-ack typo
+  guard; reports/ACKNOWLEDGED.md (path+rule+host+user+date) + EXCLUDED.md
+  acknowledged subsection + dry-run "scan acknowledged : N item(s)" +
+  --explain acked/refused/ackable override lines + dump bucket + --show-rules
+  ack section; meta/scan-acks.expect (home/-prefixed, committed) flows via
+  --expect into ALL THREE rice_stage_finish S4 scans (tree now scanned from
+  the stage root with repo-relative paths) AND install-hook.sh (pre-push
+  honors it); GUI adapter closes the excluded block on unrecognized header
+  lines (deny overridden / scan acknowledged items can never be mis-attributed
+  to a stale block) + new unit test; t29 (41 assertions: rails, dry-run,
+  explain, real push THROUGH the hook, ACKNOWLEDGED/EXCLUDED/expect files in
+  the clone, direct hook simulation blocked->expected, exact-never-expected);
+  suite **516/0**, contract rig ALL OK, GUI 52/52. Found: token.ini fixture
+  values ARE canaries -> the real-run ack target is the new non-canary
+  fixture .config/innocent/api-notes.md (canaries_absent still passes on the
+  clone). Committing + pushing next; remaining: R5 only.
 
 ## NEXT SESSION bootstrap (when the user returns)
 1. Standard four checks (see "Checks to re-run" above). Expected: origin/main

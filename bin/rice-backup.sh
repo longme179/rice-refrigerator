@@ -104,8 +104,8 @@ usage: rice-backup.sh [options]
   --rules FILE         load the customization rules from FILE instead of
                       ~/.config/rice-backup/rules.conf; --no-rules skips them
                       entirely. Sections: [include-file] [include-dir]
-                      [skip-dir] [size] (see RULES-PLAN.md; [allow]/[ack-scan]
-                      land in the next milestones)
+                      [skip-dir] [allow] [ack-scan] [size] (see RULES-PLAN.md)
+                      Precedence: CLI flag > rules.conf > built-in default
   --include-file F    extra top-level home file to consider (repeatable)
   --include-dir D     extra home-relative root to walk (repeatable; a
                       deny-listed root is refused with its rule)
@@ -409,6 +409,10 @@ printf '  hard deny list : %s item(s)\n' "${#RICE_DENIED[@]}"
 for i in "${RICE_DENIED[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
 printf '  scan hits       : %s item(s)\n' "${#RICE_SCANHITS[@]}"
 for i in "${RICE_SCANHITS[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
+if [ ${#RICE_SCAN_ACKED[@]} -gt 0 ]; then
+  printf '  scan acknowledged : %s item(s)\n' "${#RICE_SCAN_ACKED[@]}"
+  for i in "${RICE_SCAN_ACKED[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
+fi
 printf '  user excluded   : %s item(s)\n' "${#RICE_USER_EXCL[@]}"
 for i in "${RICE_USER_EXCL[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
 if [ ${#RICE_ALLOWED[@]} -gt 0 ]; then
@@ -507,6 +511,18 @@ fi
     "${#RICE_LINKS[@]}" "${#RICE_LINK_STATUS[@]}"
 } > "$RICE_STAGE/meta/counts.txt"
 
+# [ack-scan] expect list (D41/R4): repo-relative home/-prefixed paths of the
+# acknowledged files. Committed here (audit trail) and passed to the S4 stage
+# scans + the pre-push hook so acknowledged hits stay EXPECTED; the exact
+# needle is never expect-listed (scanner guarantee), so a real PAT can never
+# ride an ack.
+ACKS_EXPECT=""
+if [ ${#RICE_SCAN_ACKED[@]} -gt 0 ]; then
+  for i in "${RICE_SCAN_ACKED[@]}"; do printf 'home/%s\n' "${i%%$'\t'*}"; done \
+    > "$RICE_STAGE/meta/scan-acks.expect"
+  ACKS_EXPECT="meta/scan-acks.expect"
+fi
+
 # reports + manifest + symlink records + restore note
 mkdir -p "$RICE_STAGE/reports"
 rice_write_reports "$RICE_STAGE"
@@ -552,7 +568,7 @@ if [ -n "$EXPORT_PATH" ]; then
 else
   rice_info "committing, scanning (S4) and pushing..."
 fi
-COMMIT=$(rice_stage_finish "$RICE_STAGE" "$DIFF_BASE" "$SCANNER" "$RICE_ROOT" ${EXPORT_PATH:+export})
+COMMIT=$(rice_stage_finish "$RICE_STAGE" "$DIFF_BASE" "$SCANNER" "$RICE_ROOT" "${EXPORT_PATH:+export}" "$ACKS_EXPECT")
 FINISH_RC=$?
 COMMIT=$(printf '%s\n' "$COMMIT" | tail -n 1)
 [ "$FINISH_RC" -eq 0 ] || rice_die "backup did not complete (see messages above; exit codes: 2=secret hit, 3=push or export failure)" "$FINISH_RC"

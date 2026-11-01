@@ -114,6 +114,7 @@ it (e.g. into a password manager or an unreferenced include), and re-run.
 | `--follow-outside-home` | also follow symlink targets that live outside `$HOME` (default: those links are kept as links and reported) |
 | `--rules FILE` / `--no-rules` | load the customization rules from `FILE` instead of `~/.config/rice-backup/rules.conf`, or skip them entirely — see below |
 | `--include-file F`, `--include-dir D`, `--skip-dir D` | one-shot equivalents of the rules-file sections (repeatable; a deny-listed root is refused with its rule) |
+| `--allow PATH` | re-include a **soft**-deny match (repeatable; rules.conf `[allow]` equivalent — the hard core is always refused) |
 | `--file-cap SIZE`, `--budget SIZE` | per-file cap (default 50 MiB, hard max 100 MiB per GitHub) and total budget (default 1 GiB). `SIZE`: plain bytes or `N`/`NK`/`NM`/`NG`. Precedence: env `RICE_TOTAL_MAX_BYTES` > `--budget` > rules.conf > default |
 | `--explain [PATH...]` | **offline diagnostics** — print the verdict chain (`verdict`/`layer`/`rule`) for each PATH, or dump every bucket with reasons. No auth, no repo, nothing staged |
 | `--show-rules` | **offline** — print the effective rule set (include roots with per-entry source, deny dirs/globs, cache patterns, caps). No walk, no auth |
@@ -142,6 +143,8 @@ writes the same file:
 [include-file]     # extra TOP-LEVEL home files (e.g. .Xresources)
 [include-dir]      # extra home-relative roots to walk (e.g. Dev/dotfiles)
 [skip-dir]         # DEFAULT roots to drop from the walk (e.g. .local/share/wallpapers)
+[allow]            # re-include soft-deny matches (exact path or subtree)
+[ack-scan]         # acknowledge a content-scan hit (exact file path, rails apply)
 [size]             # file_cap = 50MiB / total_budget = 1GiB (bytes or NK/NM/NG)
 ```
 
@@ -161,8 +164,29 @@ dry-run summary (`deny overridden : N item(s)`) and recorded in
 **hard core** — ssh/gnupg/keyrings, cloud CLIs, all browser profiles,
 messengers, wallets, `*.key *.pem *.kdbx id_*` — is enforced in code and can
 NEVER be re-included: attempts are refused with the rule named.
-`[ack-scan]` (content-scan acknowledgements) lands in the next milestone —
-see `RULES-PLAN.md`.
+
+**`[ack-scan]`** acknowledges a content-scan hit on ONE exact file path — the
+remedy for files wrongly blocked by CONTENT matching (a script containing
+`password =` in a comment, a docs URL with `user:pass@`, an AWS-shaped config
+value that is not a secret). Entries are exact home-relative file paths, one
+per line:
+
+```ini
+[ack-scan]
+.config/mango/scripts/networks.py
+```
+
+Only the heuristic rules `cred-assign`, `bearer-token`,
+`url-embedded-creds` and `aws-secret-label` can be acknowledged.
+Token-shaped rules (`gh-*`, `private-key`, `aws-access-key`,
+`google-api-key`, `slack-token`, `stripe-live-key`, `jwt`) and the exact
+needle are **never** acknowledgeable — an attempt is refused with the rule
+named and the file stays excluded. Acked files are listed in the dry-run
+summary (`scan acknowledged : N item(s)`), recorded in
+`reports/ACKNOWLEDGED.md` (path + rule, who/when) and ride the push via
+`meta/scan-acks.expect`, which the pre-push hook honors — so the
+acknowledgement survives every later S4 scan of the backup repo. `--explain
+PATH` shows for any scan hit whether it is ackable before you decide.
 
 ### Selecting what gets backed up (`--exclude-from`)
 

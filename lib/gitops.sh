@@ -268,9 +268,10 @@ rice_stage_prepare() { # $1 stage dir  $2 owner  $3 name → prints "base" or ""
   )
 }
 
-rice_stage_finish() { # $1 stage  $2 diff-base ("" if none)  $3 scanner  $4 toolroot  [$5 = export]
+rice_stage_finish() { # $1 stage  $2 diff-base ("" if none)  $3 scanner  $4 toolroot  [$5 = export] [$6 = ack expect file (repo-relative; "" = none)]
   local stage=$1 base=$2 scanner=$3 toolroot=$4
   local export_mode=${5:-}
+  local expect=${6:-}
 
   ( cd "$stage" || exit 1
     git add -A
@@ -278,25 +279,32 @@ rice_stage_finish() { # $1 stage  $2 diff-base ("" if none)  $3 scanner  $4 tool
     msg="rice-backup $(date +'%Y-%m-%d %H:%M') ${RICE_DISTRO:-unknown} host=$(hostname 2>/dev/null || echo unknown)"
     git commit -q --allow-empty -m "$msg"
 
-    # install the pre-push hook (S4: hook AND explicit call)
+    # install the pre-push hook (S4: hook AND explicit call). The [ack-scan]
+    # expect list (D41/R4) rides along, so acknowledged scan hits do not
+    # block the push while everything else still does.
     if [ -z "$export_mode" ]; then
-      bash "$toolroot/scripts/install-hook.sh" "$PWD" >/dev/null 2>&1 \
+      local hookargs=("$PWD")
+      if [ -n "$expect" ] && [ -f "$expect" ]; then hookargs+=("$expect"); fi
+      bash "$toolroot/scripts/install-hook.sh" ${hookargs[@]+"${hookargs[@]}"} >/dev/null 2>&1 \
         || rice_warn "could not install pre-push hook (continuing with explicit scans)"
     fi
 
-    # ---- explicit scans (S4): full tree + changed files + the commit itself
-    local scans_failed=0 out
-    out=$("$scanner" tree "$PWD") || scans_failed=1
+    # ---- explicit scans (S4): full tree + changed files + the commit itself.
+    # Scans run from the stage root with REPO-RELATIVE paths (tree .) so the
+    # --expect prefixes (home/...) line up with git mode paths.
+    local scans_failed=0 out eargs=()
+    if [ -n "$expect" ] && [ -f "$expect" ]; then eargs=(--expect "$expect"); fi
+    out=$("$scanner" ${eargs[@]+"${eargs[@]}"} tree .) || scans_failed=1
     printf '%s\n' "$out" | grep -v '^SCAN ' >&2 || true
     if [ -n "$base" ]; then
       local changed=()
       mapfile -d '' changed < <(git diff --name-only -z "$base" HEAD 2>/dev/null)
       if [ ${#changed[@]} -gt 0 ]; then
-        out=$("$scanner" files "${changed[@]}") || scans_failed=1
+        out=$("$scanner" ${eargs[@]+"${eargs[@]}"} files "${changed[@]}") || scans_failed=1
         printf '%s\n' "$out" | grep -v '^SCAN ' >&2 || true
       fi
     fi
-    out=$("$scanner" git HEAD) || scans_failed=1
+    out=$("$scanner" ${eargs[@]+"${eargs[@]}"} git HEAD) || scans_failed=1
     printf '%s\n' "$out" | grep -v '^SCAN ' >&2 || true
 
     if [ "$scans_failed" -ne 0 ]; then

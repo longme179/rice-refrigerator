@@ -223,7 +223,7 @@ RICE_ETC_GLOBS=(
 # Loaded from ~/.config/rice-backup/rules.conf (or --rules FILE / RICE_RULES
 # env; --no-rules skips loading). Precedence everywhere: CLI flag > rules.conf
 # > built-in default (one documented exception: env RICE_TOTAL_MAX_BYTES still
-# wins for back-compat). [allow] and [ack-scan] land in milestones R3/R4.
+# wins for back-compat). [allow] landed in R3, [ack-scan] in R4.
 RICE_EXTRA_FILES=()    # [include-file] + --include-file: extra top-level files
 RICE_EXTRA_DIRS=()     # [include-dir]  + --include-dir : extra walked roots
 RICE_SKIP_DIRS=()      # [skip-dir]     + --skip-dir    : default roots to drop
@@ -232,6 +232,9 @@ RICE_RULES_FILE_CAP="" # [size] file_cap
 RICE_RULES_BUDGET=""   # [size] total_budget
 declare -g -A RICE_ALLOW=()        # [allow] + --allow: path -> source
 declare -g -A RICE_ALLOW_HIT=()   # allow entries that matched something
+declare -g -A RICE_ACK=()         # [ack-scan]: exact rel file path -> source
+declare -g -A RICE_ACK_HIT=()     # ack entries that matched a scan hit
+declare -g -a RICE_SCAN_ACKED=()  # "rel<TAB>rule" kept despite an L2 hit (D41/R4)
 declare -g -A RICE_ROOT_SOURCE=()   # root/file -> default | rules.conf | flag
 
 rice_rules_default_path() {
@@ -342,7 +345,7 @@ rice_rules_load() { # $1 explicit file ("" = RICE_RULES env, then default path),
           allow)
             [ -n "${RICE_ALLOW[$e]:-}" ] || RICE_ALLOW["$e"]='rules.conf' ;;
           ack-scan)
-            rice_warn "rules section [ack-scan] is not available yet (lands in milestone R4); entry ignored: $e" ;;
+            [ -n "${RICE_ACK[$e]:-}" ] || RICE_ACK["$e"]='rules.conf' ;;
           *) rice_warn "unknown rules section ignored: [$section] (entry: $e)" ;;
         esac
         ;;
@@ -359,6 +362,20 @@ rice_rules_add_skip() { local e; e=$(rice_rules_clean_entry "$1") || return 0
   RICE_SKIP_DIRS+=("$e"); RICE_ROOT_SOURCE["$e"]='flag'; }
 rice_rules_add_allow() { local e; e=$(rice_rules_clean_entry "$1") || return 0
   RICE_ALLOW["$e"]='flag'; }
+
+# [ack-scan] rails (D41, milestone R4): which L2 scan rules may be
+# acknowledged. Only the HEURISTIC rules that over-match innocuous content
+# ("password = changeme"-style assignments, Bearer headers, URLs with
+# embedded credentials, labeled AWS secrets) are ackable. Token-shaped rules
+# and key material are NEVER ackable, and 'exact' (the runtime PAT needle) is
+# never ackable either - the scanner additionally refuses to expect-list
+# exact hits at all, so the rail holds end-to-end.
+rice_ack_is_allowed() { # $1 scan rule name -> 0 when acknowledgeable
+  case "$1" in
+    cred-assign|bearer-token|url-embedded-creds|aws-secret-label) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # [allow] overrides (D40, milestone R3): re-include SOFT-denied entries as
 # fresh candidates (cache/size/scan still apply to them); HARD-CORE matches
@@ -491,6 +508,7 @@ rice_collect_init() {
   RICE_DENIED=()         # "rel<TAB>rule"
   RICE_ALLOWED=()        # "rel<TAB>rule" (rescued via [allow], D40/R3)
   RICE_SCANHITS=()       # "rel<TAB>rule"
+  RICE_SCAN_ACKED=()     # "rel<TAB>rule" (kept via [ack-scan], D41/R4)
   RICE_USER_EXCL=()      # "rel<TAB>user-exclude" (from --exclude-from, D32)
   RICE_SKIPPED_BIG=()    # "rel<TAB>bytes"
   RICE_SKIPPED_CACHE=()  # rel paths (or dir summaries)
@@ -834,7 +852,12 @@ rice_collect_etc() {
   done
 }
 
-# L2: content scan of all candidates; hits move RICE_INCLUDE -> RICE_SCANHITS
+# L2: content scan of all candidates; hits move RICE_INCLUDE -> RICE_SCANHITS.
+# [ack-scan] overrides (D41, R4): a hit on an EXACTLY acked path is KEPT in
+# RICE_INCLUDE (and recorded in RICE_SCAN_ACKED) when its rule is one of the
+# acknowledgeable heuristics; token-shaped/key-material rules - and the exact
+# needle - are REFUSED with the rule named, so an ack can never stage a real
+# credential. Acked files keep their bytes/metadata (they are uploaded).
 rice_scan_candidates() { # $1 home  $2 scanner script
   local home=$1 scanner=$2
   [ ${#RICE_INCLUDE[@]} -gt 0 ] || return 0
@@ -852,20 +875,35 @@ rice_scan_candidates() { # $1 home  $2 scanner script
     rel=${path#"$home"/}
     bad["$rel"]="$rule"
   done <<<"$out"
+  local TBTAB
+  TBTAB=$(printf '\t')
+  local -A dead=()   # rels actually leaving RICE_INCLUDE (scan-blocked)
   local keep=()
   for rel in "${RICE_INCLUDE[@]}"; do
     if [ -n "${bad[$rel]:-}" ]; then
-      RICE_SCANHITS+=("$rel"$'\t'"${bad[$rel]}")
+      if [ -n "${RICE_ACK[$rel]:-}" ]; then
+        RICE_ACK_HIT["$rel"]=1
+        if rice_ack_is_allowed "${bad[$rel]}"; then
+          RICE_SCAN_ACKED+=("$rel$TBTAB${bad[$rel]}")
+          rice_warn "scan hit acknowledged via [ack-scan]: $rel [${bad[$rel]}]"
+          keep+=("$rel")
+          continue
+        fi
+        rice_warn "ack refused - ${bad[$rel]} is token-shaped or key material (never acknowledgeable): $rel"
+      fi
+      RICE_SCANHITS+=("$rel$TBTAB${bad[$rel]}")
+      dead["$rel"]=1
     else
       keep+=("$rel")
     fi
   done
   RICE_INCLUDE=("${keep[@]}")
-  # also drop their metadata and subtract their bytes from the reported total
+  # also drop the metadata of scan-blocked files and subtract their bytes from
+  # the reported total (acked files are uploaded, so theirs is kept)
   local metakeep=() m r2 b
   for m in "${RICE_META_INC[@]}"; do
-    r2=${m%%$'\t'*}
-    if [ -n "${bad[$r2]:-}" ]; then
+    r2=${m%%"$TBTAB"*}
+    if [ -n "${dead[$r2]:-}" ]; then
       b=$(printf '%s' "$m" | cut -f2)
       RICE_TOTAL_BYTES=$((RICE_TOTAL_BYTES - ${b:-0}))
     else
@@ -873,6 +911,15 @@ rice_scan_candidates() { # $1 home  $2 scanner script
     fi
   done
   RICE_META_INC=("${metakeep[@]}")
+  # typo guard (same as [allow]): an ack that matched no scan hit is a no-op
+  local a
+  for a in "${!RICE_ACK[@]}"; do
+    [ -n "${RICE_ACK_HIT[$a]:-}" ] || rice_warn "ack entry matched no scan hit: $a"
+  done
+  if [ ${#RICE_SCAN_ACKED[@]} -gt 0 ]; then
+    rice_info "scan acknowledgements applied: ${#RICE_SCAN_ACKED[@]} item(s) kept"
+  fi
+  return 0
 }
 
 # L2 for the /etc allowlist (--include-system): same rules as $HOME candidates
@@ -1043,9 +1090,10 @@ rice_stage_copy_etc() { # $1 stage
   done
 }
 
-# EXCLUDED.md / SKIPPED.md / ALLOWED.md (names and rules only - never contents, never values)
+# EXCLUDED.md / SKIPPED.md / ALLOWED.md / ACKNOWLEDGED.md (names and rules only - never contents, never values)
 rice_write_reports() { # $1 stage
-  local stage=$1 i
+  local stage=$1 i TBTAB
+  TBTAB=$(printf '\t')
   {
     printf '# Excluded by policy (names only - contents were never copied)\n\n'
     printf 'Generated: %s\n\n' "$(date -u +'%Y-%m-%d %H:%M:%S UTC')\n"
@@ -1055,6 +1103,12 @@ rice_write_reports() { # $1 stage
     printf '\n## Content scan hits (L2) - rule names only, values never stored\n'
     if [ ${#RICE_SCANHITS[@]} -eq 0 ]; then printf '(none)\n'; fi
     for i in "${RICE_SCANHITS[@]}"; do printf -- '- %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
+    if [ ${#RICE_SCAN_ACKED[@]} -gt 0 ]; then
+      printf '\n### acknowledged via [ack-scan] - kept in the backup (see ACKNOWLEDGED.md)\n'
+      for i in "${RICE_SCAN_ACKED[@]}"; do
+        printf -- '- %s [%s]\n' "${i%%"$TBTAB"*}" "${i#*"$TBTAB"}"
+      done
+    fi
     printf '\n## User excluded (--exclude-from selection)\n'
     if [ ${#RICE_USER_EXCL[@]} -eq 0 ]; then printf '(none)\n'; fi
     for i in "${RICE_USER_EXCL[@]}"; do printf -- '- %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
@@ -1069,6 +1123,21 @@ rice_write_reports() { # $1 stage
     if [ ${#RICE_ALLOWED[@]} -eq 0 ]; then printf '(none)\n'; fi
     for i in "${RICE_ALLOWED[@]}"; do printf -- '- %s [was: %s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
   } > "$stage/reports/ALLOWED.md"
+  {
+    printf '# Scan acknowledgements ([ack-scan], names only)\n\n'
+    printf 'Generated: %s on %s by %s\n\n' "$(date -u +'%Y-%m-%d %H:%M:%S UTC')" "$(hostname 2>/dev/null || printf 'unknown')" "$(id -un 2>/dev/null || printf '%s' "${USER:-unknown}")"
+    printf 'These entries were kept in the backup after their content-scan hit was\n'
+    printf 'explicitly acknowledged via an [ack-scan] rule (rules.conf). Only the\n'
+    printf 'heuristic scan rules (cred-assign, bearer-token, url-embedded-creds,\n'
+    printf 'aws-secret-label) can be acknowledged; token-shaped rules and key\n'
+    printf 'material are always refused. Rule names are recorded for audit; the\n'
+    printf 'matched values are part of the acknowledged files, nothing extra is\n'
+    printf 'ever stored about them.\n\n'
+    if [ ${#RICE_SCAN_ACKED[@]} -eq 0 ]; then printf '(none)\n'; fi
+    for i in "${RICE_SCAN_ACKED[@]}"; do
+      printf -- '- %s [%s]\n' "${i%%"$TBTAB"*}" "${i#*"$TBTAB"}"
+    done
+  } > "$stage/reports/ACKNOWLEDGED.md"
   {
     printf '# Skipped items\n\n'
     printf '## Files larger than %s\n' "$(rice_hr_size "$RICE_MAX_FILE_BYTES")"
@@ -1243,6 +1312,14 @@ rice_show_rules() {
       printf '  %-30s (%s)\n' "$i" "${RICE_ALLOW[$i]}"
     done
   fi
+  if [ ${#RICE_ACK[@]} -gt 0 ]; then
+    printf '\nscan acknowledgements ([ack-scan], exact file paths only):\n'
+    for i in "${!RICE_ACK[@]}"; do
+      printf '  %-30s (%s)\n' "$i" "${RICE_ACK[$i]}"
+    done
+    printf '  ackable rules: cred-assign, bearer-token, url-embedded-creds,\n'
+    printf '  aws-secret-label - token-shaped rules are always refused\n'
+  fi
   printf '\ncache/junk patterns (L3): .cache/**, */cache|Cache|caches/**,\n'
   printf '  node_modules, __pycache__, .npm, .git, Trash, .config/fcitx/dbus, *.log\n'
   printf '\n/etc allowlist (only with --include-system):\n'
@@ -1258,7 +1335,7 @@ rice_show_rules() {
 # match wins and the order of the lookups is only presentation.
 rice_explain() { # $1 home; $2... paths ("" = dump every bucket)
   local home=$1; shift
-  local p rel i verdict layer rule
+  local p rel i verdict layer rule acked
   printf '=== rice-backup explain ===\n'
   printf 'home : %s\n' "$home"
   if [ "$#" -gt 0 ]; then
@@ -1279,11 +1356,17 @@ rice_explain() { # $1 home; $2... paths ("" = dump every bucket)
           continue
           ;;
       esac
-      verdict=""; layer=""; rule=""
+      verdict=""; layer=""; rule=""; acked=""
       for i in "${RICE_ALLOWED[@]}"; do
         [ "${i%%$'\t'*}" = "$rel" ] || continue
         verdict=included; layer='candidate'
         rule="passes every layer; will be staged (rescued via [allow], was: ${i#*$'\t'}})"
+        break
+      done
+      [ -n "$verdict" ] || for i in "${RICE_SCAN_ACKED[@]}"; do
+        [ "${i%%$'\t'*}" = "$rel" ] || continue
+        verdict=included; layer='L2 scan'; acked=1
+        rule="scan:${i#*$'\t'} - acknowledged via [ack-scan], kept after review"
         break
       done
       [ -n "$verdict" ] || for i in "${RICE_DENIED[@]}"; do
@@ -1333,6 +1416,16 @@ rice_explain() { # $1 home; $2... paths ("" = dump every bucket)
           else
             printf '      override : soft rule - [allow] can re-include it\n'
           fi
+        elif [ "$layer" = 'L2 scan' ]; then
+          if [ -n "${acked:-}" ]; then
+            printf '      override : acknowledged via [ack-scan] (heuristic rule, eyes-on decision)\n'
+          elif [ -n "${RICE_ACK[$rel]:-}" ]; then
+            printf '      override : ack REFUSED - %s is token-shaped/key material, never acknowledgeable\n' "${rule#scan:}"
+          elif rice_ack_is_allowed "${rule#scan:}"; then
+            printf '      override : heuristic rule - [ack-scan] can acknowledge it\n'
+          else
+            printf '      override : NEVER acknowledgeable - token-shaped or key material\n'
+          fi
         fi
       elif [ ! -e "$home/$rel" ] && [ ! -L "$home/$rel" ]; then
         printf '      verdict  : not found\n'
@@ -1357,6 +1450,8 @@ rice_explain() { # $1 home; $2... paths ("" = dump every bucket)
     for i in "${RICE_DENIED[@]}"; do printf '    %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
     printf '  L2 scan      : %s item(s)\n' "${#RICE_SCANHITS[@]}"
     for i in "${RICE_SCANHITS[@]}"; do printf '    %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
+    printf '  scan acked   : %s item(s)\n' "${#RICE_SCAN_ACKED[@]}"
+    for i in "${RICE_SCAN_ACKED[@]}"; do printf '    %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
     printf '  selection    : %s item(s)\n' "${#RICE_USER_EXCL[@]}"
     for i in "${RICE_USER_EXCL[@]}"; do printf '    %s [--exclude-from]\n' "${i%%$'\t'*}"; done
     printf '\nskipped:\n'

@@ -1047,9 +1047,128 @@ EOF
   canaries_absent "t28 clone (allow never bypassed the scan)" "$TW/clone"
 }
 
+t29() { # D41 R4 [ack-scan] overrides with rails + expect flow + ACKNOWLEDGED.md
+  TW=$SUITE/t29; mkdir -p "$TW/home"; make_home "$TW/home"; make_remote test/backup
+  setup_env fedora
+  # extra NON-CANARY soft-hit fixture (url-embedded-creds, ackable) - the
+  # "innocent false positive" the whole feature exists for
+  mkdir -p "$TW/home/.config/innocent"
+  printf 'see https://%s@example.com/endpoint\n' 'user:secretpw1' \
+    > "$TW/home/.config/innocent/api-notes.md"
+  cat > "$TW/rules.conf" <<'EOF'
+[allow]
+.env
+
+[ack-scan]
+.env
+.config/myapp/token.ini
+.config/innocent/api-notes.md
+.config/weird/github-pat
+.config/misc/notes.txt
+zzz-nothing
+EOF
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" --repo test/backup --dry-run); rc=$?
+  assert_rc "t29 ack dry-run rc" "$rc" 0
+  # acked soft hits stay in the upload list + the new summary line names them
+  assert_match "t29 acked cred-assign in upload list" "$out" "    .config/myapp/token.ini"
+  assert_match "t29 acked url-creds in upload list" "$out" "    .config/innocent/api-notes.md"
+  assert_match "t29 allow+ack env in upload list" "$out" "    .env"
+  assert_match "t29 ack count line" "$out" "scan acknowledged : 3 item(s)"
+  assert_match "t29 acked item named with rule" "$out" ".config/myapp/token.ini [cred-assign]"
+  assert_match "t29 ack applied info line" "$out" "scan acknowledgements applied: 3 item(s) kept"
+  # rails: token-shaped and exact-needle hits are refused with the rule named
+  assert_match "t29 token-shaped ack refused" "$out" \
+    "ack refused - gh-fine-grained is token-shaped or key material (never acknowledgeable): .config/weird/github-pat"
+  assert_match "t29 exact ack refused" "$out" \
+    "ack refused - exact is token-shaped or key material (never acknowledgeable): .config/misc/notes.txt"
+  assert_match "t29 refused ack stays a scan hit" "$out" \
+    "- .config/weird/github-pat [gh-fine-grained]"
+  assert_match "t29 refused exact ack stays a scan hit" "$out" \
+    "- .config/misc/notes.txt [exact]"
+  assert_match "t29 unmatched ack warned" "$out" "ack entry matched no scan hit: zzz-nothing"
+  # --show-rules lists the ack entries with their source + the rail policy
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" --show-rules)
+  assert_match "t29 show-rules ack section" "$out" \
+    "scan acknowledgements ([ack-scan], exact file paths only)"
+  assert_match_re "t29 show-rules ack entry source" "$out" \
+    '\.config/myapp/token\.ini +\(rules\.conf\)'
+  assert_match "t29 show-rules ackable rules note" "$out" \
+    "ackable rules: cred-assign, bearer-token, url-embedded-creds,"
+  # --explain verdicts: acked / refused / un-acked-but-ackable
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" \
+    --explain .config/myapp/token.ini .config/weird/github-pat .config/net/proxy.conf)
+  assert_match "t29 explain acked rule line" "$out" \
+    "scan:cred-assign - acknowledged via [ack-scan], kept after review"
+  assert_match "t29 explain acked override line" "$out" \
+    "override : acknowledged via [ack-scan] (heuristic rule, eyes-on decision)"
+  assert_match "t29 explain refused override line" "$out" \
+    "override : ack REFUSED - gh-fine-grained is token-shaped/key material, never acknowledgeable"
+  assert_match "t29 explain un-acked ackable override line" "$out" \
+    "override : heuristic rule - [ack-scan] can acknowledge it"
+  # dump mode gained the scan-acked bucket
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" --explain)
+  assert_match "t29 dump scan acked bucket" "$out" "scan acked   : 3 item(s)"
+  # real run: only the innocent false positive is acked; the push must ride
+  # the S4 expect list through BOTH the explicit stage scans AND the pre-push
+  # hook (without it, the url-embedded-creds hit would block everything)
+  printf '[ack-scan]\n.config/innocent/api-notes.md\n' > "$TW/ack-rules.conf"
+  out=$(backup --home "$TW/home" --rules "$TW/ack-rules.conf" --repo test/backup --yes 2>&1); rc=$?
+  assert_rc "t29 real run rc" "$rc" 0
+  assert_match "t29 push happened" "$out" "backup pushed: commit"
+  git clone -q "$TW/remote-base/test/backup.git" "$TW/clone"
+  assert_file "t29 acked file pushed" "$TW/clone/home/.config/innocent/api-notes.md"
+  assert_nofile "t29 canary-valued file NOT pushed (not acked this run)" "$TW/clone/home/.config/myapp/token.ini"
+  assert_nofile "t29 refused token not pushed" "$TW/clone/home/.config/weird/github-pat"
+  assert_nofile "t29 exact-hit never pushed" "$TW/clone/home/.config/misc/notes.txt"
+  assert_file "t29 ACKNOWLEDGED.md in repo" "$TW/clone/reports/ACKNOWLEDGED.md"
+  assert_file_match "t29 ACKNOWLEDGED.md lists ack" "$TW/clone/reports/ACKNOWLEDGED.md" \
+    ".config/innocent/api-notes.md [url-embedded-creds]"
+  assert_file_match "t29 ACKNOWLEDGED.md generated-by line" "$TW/clone/reports/ACKNOWLEDGED.md" "Generated:"
+  assert_no_match "t29 ACKNOWLEDGED.md lists no refusals" "$(cat "$TW/clone/reports/ACKNOWLEDGED.md")" "github-pat"
+  assert_file_match "t29 EXCLUDED.md acknowledged section" "$TW/clone/reports/EXCLUDED.md" \
+    "acknowledged via [ack-scan] - kept in the backup"
+  assert_file "t29 scan-acks.expect committed" "$TW/clone/meta/scan-acks.expect"
+  assert_file_match "t29 expect lists repo-relative path" "$TW/clone/meta/scan-acks.expect" \
+    "home/.config/innocent/api-notes.md"
+  assert_no_match "t29 expect lists no refused path" "$(cat "$TW/clone/meta/scan-acks.expect")" "github-pat"
+  assert_eq "t29 remote has exactly one commit" "$(revcount "$TW/remote-base/test/backup.git")" "1"
+  canaries_absent "t29 clone (acks never leak true canaries)" "$TW/clone"
+  # direct pre-push hook simulation: an un-acked scan hit blocks the push;
+  # the expect list (exactly what [ack-scan] installs) unblocks it
+  TW2=$SUITE/t29hook
+  mkdir -p "$TW2/repo"
+  git init -q --bare -b main "$TW2/remote.git"
+  git init -q -b main "$TW2/repo"
+  (
+    cd "$TW2/repo" || exit 1
+    git config user.name t >/dev/null; git config user.email t@t >/dev/null
+    mkdir -p home/.config/myapp
+    cp "$TW/home/.config/myapp/token.ini" home/.config/myapp/token.ini
+    git add -A; git commit -q -m c1
+    git remote add origin "$TW2/remote.git"
+    bash "$ROOT/scripts/install-hook.sh" "$PWD" >/dev/null
+    git push -q origin main >/dev/null 2>&1; rc=$?
+    assert_rc "t29 hook blocks un-acked scan hit" "$rc" 1
+    printf 'home/.config/myapp/token.ini\n' > "$TW2/expect"
+    bash "$ROOT/scripts/install-hook.sh" "$PWD" "$TW2/expect" >/dev/null
+    git push -q origin main >/dev/null 2>&1; rc=$?
+    assert_rc "t29 hook allows expected ack" "$rc" 0
+  )
+  # the scanner NEVER expect-lists exact hits: the runtime PAT needle can
+  # never ride an ack, whatever rules.conf says (scanner guarantee)
+  mkdir -p "$TW/exactdir"
+  printf 'exact %s here\n' "$RICE_SCAN_EXACT" > "$TW/exactdir/f"
+  printf 'exactdir/\n' > "$TW/exact-expect"
+  out=$(bash "$SCANNER" --expect "$TW/exact-expect" files "$TW/exactdir/f" 2>/dev/null); rc=$?
+  assert_rc "t29 exact hit is never expected" "$rc" 1
+  assert_match "t29 exact stays a HIT despite expect" "$out" \
+    "$(printf 'HIT\texact\t%s' "$TW/exactdir/f")"
+  assert_no_match "t29 needle value never printed" "$out" "$RICE_SCAN_EXACT"
+}
+
 # --------------------------------------------------------------------- runner
 printf 'rice-backup acceptance suite\n  root: %s\n  work: %s\n\n' "$ROOT" "$SUITE"
-TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23 t24 t25 t26 t27 t28"
+TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23 t24 t25 t26 t27 t28 t29"
 for t in $TESTS; do
   printf '%s\n' "-- $t"
   ( "$t" ) || true

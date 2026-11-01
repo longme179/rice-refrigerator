@@ -147,6 +147,10 @@ EXCL_BLOCK_RE = re.compile(
     r"^  (hard deny list|scan hits|user excluded|oversized|caches/junk)"
     r"(?: \([^)]+\))?\s*:\s*(\d+) item\(s\)\s*$"
 )
+# A two-space-indented label line that is NOT one of the recognized excluded
+# blocks (e.g. "deny overridden", "scan acknowledged") closes the previous
+# block, so its item lines are never mis-attributed to a stale block.
+EXCL_BLOCKHEAD_RE = re.compile(r"^  \S.*:\s")
 EXCL_ITEM_RULE_RE = re.compile(r"^ {4}- (.+?) \[([^\]]+)\]$")
 EXCL_ITEM_SIZE_RE = re.compile(r"^ {4}- (.+?) \(([0-9.]+\s*(?:B|KiB|MiB|GiB))\)$")
 EXCL_ITEM_PLAIN_RE = re.compile(r"^ {4}- (.+)$")
@@ -189,6 +193,9 @@ def parse_dry_run(text: str) -> DryRunSummary:
         if m:
             current_block = ExcludedBlock(label=m.group(1), count=int(m.group(2)))
             s.excluded.append(current_block)
+            continue
+        if current_block is not None and EXCL_BLOCKHEAD_RE.match(line):
+            current_block = None
             continue
         if current_block is not None:
             m = EXCL_ITEM_RULE_RE.match(line)

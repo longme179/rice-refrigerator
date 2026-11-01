@@ -228,6 +228,32 @@ class TestParseDryRun(unittest.TestCase):
         names = {sec.name for sec in s.sections}
         self.assertNotIn("symlinks followed", names)
 
+    def test_override_ack_lines_close_excluded_block(self):
+        # R3/R4: "deny overridden" and "scan acknowledged" summary lines are
+        # NOT excluded blocks; their item lines must never be attributed to
+        # the preceding recognized block (e.g. "user excluded").
+        text = DRYRUN_NORMAL.replace(
+            "  oversized (>50 MiB): 1 item(s)",
+            "  deny overridden : 1 item(s)\n"
+            "    - .bash_history [deny-file:.bash_history]\n"
+            "  scan acknowledged : 1 item(s)\n"
+            "    - .config/myapp/token.ini [cred-assign]\n"
+            "  oversized (>50 MiB): 1 item(s)")
+        s = adapter.parse_dry_run(text)
+        self.assertTrue(s.parsed_ok)
+        user = s.block("user excluded")
+        self.assertEqual(user.count, 2)
+        self.assertEqual(len(user.items), 2)
+        for item, _rule in user.items:
+            self.assertNotIn(".bash_history", item)
+            self.assertNotIn("token.ini", item)
+        big = s.block("oversized")
+        self.assertEqual(big.items[0][0], ".config/bigapp/data.bin")
+        # the unrecognized lines must not become sections either
+        names = {sec.name for sec in s.sections}
+        self.assertNotIn("deny overridden", names)
+        self.assertNotIn("scan acknowledged", names)
+
     def test_symlinks_line_absent_keeps_zeros(self):
         s = adapter.parse_dry_run(DRYRUN_NORMAL)
         self.assertEqual(s.links_followed, 0)
