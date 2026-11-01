@@ -149,9 +149,20 @@ Every other layer still applies inside new roots — the deny list, the content
 scan, cache skipping, the per-file cap — so customization can never bypass a
 security layer. A deny-listed `[include-dir]` entry is refused with its rule
 named. `--show-rules` prints the merged rule set with the source of every
-entry; `--explain PATH` tells you exactly which layer and rule claims a path
-before you customize anything. `[allow]` and `[ack-scan]` (deny-list and
-scan-hit overrides) land in the next milestones — see `RULES-PLAN.md`.
+entry (and marks each deny rule **hard**/**soft**); `--explain PATH` tells you
+exactly which layer and rule claims a path before you customize anything.
+
+**`[allow]` (or `--allow PATH`, repeatable)** re-includes entries that were
+denied by a **soft** deny rule (histories, `.env`-family names, `*history*`
+globs, `*.tfstate`, VSCode globalStorage…) — the exact remedy for files
+wrongly blocked by NAME matching. Each override is warned live, listed in the
+dry-run summary (`deny overridden : N item(s)`) and recorded in
+`reports/ALLOWED.md`; the content scan still guards every rescued file. The
+**hard core** — ssh/gnupg/keyrings, cloud CLIs, all browser profiles,
+messengers, wallets, `*.key *.pem *.kdbx id_*` — is enforced in code and can
+NEVER be re-included: attempts are refused with the rule named.
+`[ack-scan]` (content-scan acknowledgements) lands in the next milestone —
+see `RULES-PLAN.md`.
 
 ### Selecting what gets backed up (`--exclude-from`)
 

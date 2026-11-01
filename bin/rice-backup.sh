@@ -110,6 +110,11 @@ usage: rice-backup.sh [options]
   --include-dir D     extra home-relative root to walk (repeatable; a
                       deny-listed root is refused with its rule)
   --skip-dir D        drop a DEFAULT include root from the walk (repeatable)
+  --allow PATH        re-include a SOFT-deny match (file or subtree; repeat-
+                      able; rules.conf [allow] equivalent). The hard core
+                      (ssh, browser profiles, messengers, wallets, key
+                      material...) is NEVER overridable - attempts are refused
+                      with the rule named
   --file-cap SIZE     per-file cap (default 50 MiB; hard max 100 MiB per
                       GitHub). SIZE: plain bytes or N/NK/NM/NG
   --budget SIZE       total budget (default 1 GiB). Precedence: env
@@ -147,6 +152,7 @@ while [ $# -gt 0 ]; do
     --include-file) [ $# -ge 2 ] || usage 2; rice_rules_add_file "$2"; shift 2 ;;
     --include-dir)  [ $# -ge 2 ] || usage 2; rice_rules_add_dir "$2"; shift 2 ;;
     --skip-dir)     [ $# -ge 2 ] || usage 2; rice_rules_add_skip "$2"; shift 2 ;;
+    --allow)         [ $# -ge 2 ] || usage 2; rice_rules_add_allow "$2"; shift 2 ;;
     --file-cap) [ $# -ge 2 ] || usage 2
       RICE_FLAG_FILE_CAP=$(rice_rules_parse_size "$2") \
         || rice_die "--file-cap: invalid size: $2 (plain bytes or N/NK/NM/NG)" 2
@@ -259,6 +265,9 @@ fi
 rice_collect_init
 rice_info "collecting candidates from $RICE_HOME (originals are read-only)..."
 rice_collect_home "$RICE_HOME"
+# ---- [allow] overrides (D40/R3): rescue soft-denied entries BEFORE the
+# content scan so the scanner still guards every re-included file
+rice_apply_allow_overrides "$RICE_HOME"
 if [ "$INCLUDE_SYSTEM" -eq 1 ]; then
   rice_collect_etc
   rice_info "content-scanning ${#RICE_ETC_INCLUDE[@]} /etc allowlist file(s) with the S4 rules..."
@@ -402,6 +411,10 @@ printf '  scan hits       : %s item(s)\n' "${#RICE_SCANHITS[@]}"
 for i in "${RICE_SCANHITS[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
 printf '  user excluded   : %s item(s)\n' "${#RICE_USER_EXCL[@]}"
 for i in "${RICE_USER_EXCL[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
+if [ ${#RICE_ALLOWED[@]} -gt 0 ]; then
+  printf '  deny overridden : %s item(s)\n' "${#RICE_ALLOWED[@]}"
+  for i in "${RICE_ALLOWED[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
+fi
 printf '  oversized (>%s): %s item(s)\n' "$(rice_hr_size "$RICE_MAX_FILE_BYTES")" "${#RICE_SKIPPED_BIG[@]}"
 for i in "${RICE_SKIPPED_BIG[@]}"; do printf '    - %s (%s)\n' "${i%%$'\t'*}" "$(rice_hr_size "${i#*$'\t'}")"; done
 printf '  caches/junk     : %s item(s)\n' "${#RICE_SKIPPED_CACHE[@]}"

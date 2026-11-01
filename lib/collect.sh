@@ -106,6 +106,52 @@ RICE_DENY_GLOBS=(
   *.tfstate.*
 )
 
+# ---- L1 hard core (D40, milestone R3): deny entries that can NEVER be re-included
+# ---- via [allow]; everything else in L1 is soft (overridable with a warning).
+# The stored deny REASONS keep their exact existing format ("deny-dir:.ssh"),
+# so reports, the GUI adapter and the tests are untouched; hard/soft is derived
+# on demand via rice_hard_rule_for.
+RICE_DENY_HARD_DIRS=(
+  .ssh .gnupg .gnome/keyrings .gnome2/keyrings .local/share/keyrings
+  .local/share/kwalletd .password-store .config/gopass .local/share/gopass
+  .pki .onepassword .config/1Password
+  .aws .config/gcloud .azure .kube .config/kube .config/helm .docker .config/gh
+  .mozilla .config/mozilla .local/share/mozilla .librewolf .waterfox .zen .floorp
+  .config/google-chrome .config/google-chrome-beta .config/google-chrome-unstable
+  .config/chromium .config/chromium-beta .config/BraveSoftware .config/vivaldi
+  .config/Opera .config/opera .config/Microsoft-edge .config/librewolf
+  .config/waterfox .config/ungoogled-chromium .var/app
+  .thunderbird .config/evolution .local/share/evolution .local/share/TelegramDesktop
+  .config/telegram-desktop .config/Signal .config/Element .config/discord
+  .config/Keybase .config/Slack .config/zoomus .config/Zoom
+)
+RICE_DENY_HARD_GLOBS=(
+  .netrc .netrc.gpg .git-credentials .pypirc .k5login
+  .kdbx '*.kdbx' '*.kdb' '*.key' '*.pem' '*.p12' '*.pfx'
+  '*id_rsa*' '*id_dsa*' '*id_ecdsa*' '*id_ed25519*'
+)
+declare -g -A RICE_DENY_HARD_DIR_SET=()
+for _hd in "${RICE_DENY_HARD_DIRS[@]}"; do RICE_DENY_HARD_DIR_SET["$_hd"]=1; done
+unset _hd
+declare -g -A RICE_DENY_HARD_GLOB_SET=()
+for _hg in "${RICE_DENY_HARD_GLOBS[@]}"; do RICE_DENY_HARD_GLOB_SET["$_hg"]=1; done
+unset _hg
+
+# prints the matching HARD rule (dir prefix or glob) for a rel path, or nothing
+rice_hard_rule_for() { # $1 rel path
+  local rel_l=${1,,} p g
+  for p in "${RICE_DENY_HARD_DIRS[@]}"; do
+    if [ "$rel_l" = "$p" ] || [[ "$rel_l" == "$p"/* ]]; then printf '%s' "$p"; return; fi
+  done
+  # shellcheck disable=SC2254  (g is intentionally used as a case pattern)
+  for g in "${RICE_DENY_HARD_GLOBS[@]}"; do
+    case "$rel_l" in
+      $g) printf '%s' "$g"; return ;;
+    esac
+  done
+  return 0
+}
+
 # ---- include roots under $HOME ----
 RICE_HOME_FILES=(
   .bashrc
@@ -184,6 +230,8 @@ RICE_SKIP_DIRS=()      # [skip-dir]     + --skip-dir    : default roots to drop
 RICE_RULES_FILE=""     # resolved rules file ("" when none was loaded)
 RICE_RULES_FILE_CAP="" # [size] file_cap
 RICE_RULES_BUDGET=""   # [size] total_budget
+declare -g -A RICE_ALLOW=()        # [allow] + --allow: path -> source
+declare -g -A RICE_ALLOW_HIT=()   # allow entries that matched something
 declare -g -A RICE_ROOT_SOURCE=()   # root/file -> default | rules.conf | flag
 
 rice_rules_default_path() {
@@ -291,8 +339,10 @@ rice_rules_load() { # $1 explicit file ("" = RICE_RULES env, then default path),
             [ -n "${RICE_ROOT_SOURCE[$e]:-}" ] || RICE_ROOT_SOURCE["$e"]='rules.conf' ;;
           skip-dir)
             RICE_SKIP_DIRS+=("$e") ;;
-          allow|ack-scan)
-            rice_warn "rules section [$section] is not available yet (lands in milestone R3/R4); entry ignored: $e" ;;
+          allow)
+            [ -n "${RICE_ALLOW[$e]:-}" ] || RICE_ALLOW["$e"]='rules.conf' ;;
+          ack-scan)
+            rice_warn "rules section [ack-scan] is not available yet (lands in milestone R4); entry ignored: $e" ;;
           *) rice_warn "unknown rules section ignored: [$section] (entry: $e)" ;;
         esac
         ;;
@@ -307,6 +357,58 @@ rice_rules_add_dir() { local e; e=$(rice_rules_clean_entry "$1") || return 0
   RICE_EXTRA_DIRS+=("$e"); RICE_ROOT_SOURCE["$e"]='flag'; }
 rice_rules_add_skip() { local e; e=$(rice_rules_clean_entry "$1") || return 0
   RICE_SKIP_DIRS+=("$e"); RICE_ROOT_SOURCE["$e"]='flag'; }
+rice_rules_add_allow() { local e; e=$(rice_rules_clean_entry "$1") || return 0
+  RICE_ALLOW["$e"]='flag'; }
+
+# [allow] overrides (D40, milestone R3): re-include SOFT-denied entries as
+# fresh candidates (cache/size/scan still apply to them); HARD-CORE matches
+# are REFUSED with the rule named and stay denied. Runs right after the walk
+# and BEFORE the content scan, so the scanner still guards every rescued file.
+rice_apply_allow_overrides() { # $1 home
+  [ ${#RICE_ALLOW[@]} -gt 0 ] || return 0
+  local home=$1 keep=() rec rel rule a hit hard f raw real
+  local TBTAB
+  TBTAB=$(printf '\t')
+  for rec in "${RICE_DENIED[@]}"; do
+    rel=${rec%%"$TBTAB"*}; rule=${rec#*"$TBTAB"}
+    hit=""
+    for a in "${!RICE_ALLOW[@]}"; do
+      if [ "$rel" = "$a" ] || [[ "$rel" == "$a"/* ]]; then hit=$a; break; fi
+    done
+    if [ -z "$hit" ]; then keep+=("$rec"); continue; fi
+    RICE_ALLOW_HIT["$hit"]=1
+    hard=$(rice_hard_rule_for "$rel")
+    if [ -n "$hard" ]; then
+      rice_warn "allow refused (hard core, never overridable): $rel [$rule]"
+      keep+=("$rec")
+      continue
+    fi
+    RICE_ALLOWED+=("$rel"$'\t'"$rule")
+    rice_warn "deny overridden via [allow]: $rel [$rule]"
+    if [ -L "$home/$rel" ]; then
+      # rescued symlink: decide it through the normal D37 resolver
+      raw=$(readlink -- "$home/$rel" 2>/dev/null) || raw=""
+      real=$(readlink -f -- "$home/$rel" 2>/dev/null) || true
+      [ -n "$real" ] && [ ! -e "$real" ] && real=""
+      rice_resolve_one_link "$home" "$rel" "$raw" "$real"
+    elif [ -d "$home/$rel" ]; then
+      # rescued directory (e.g. a soft deny-dir): walk it fresh - children
+      # still go through every layer, so only individually-allowed files pass
+      while IFS= read -r -d '' f; do
+        [ -n "${RICE_SEEN[${f#"$home"/}]:-}" ] && continue
+        rice_consider "$home" "${f#"$home"/}"
+      done < <(find "$home/$rel" \( -type f -o -type l \) -print0 2>/dev/null)
+    else
+      rice_consider "$home" "$rel" 1
+    fi
+  done
+  RICE_DENIED=("${keep[@]}")
+  local n=0
+  for a in "${!RICE_ALLOW[@]}"; do
+    [ -n "${RICE_ALLOW_HIT[$a]:-}" ] || { rice_warn "allow entry matched no denied item: $a"; n=$((n+1)); }
+  done
+  rice_info "deny overrides applied: ${#RICE_ALLOWED[@]} item(s) re-included"
+}
 
 # Apply the loaded rules + flags: resolve the caps, merge extra and skipped
 # roots into the include arrays (with per-entry sources for --show-rules),
@@ -387,6 +489,7 @@ rice_collect_init() {
   RICE_INCLUDE=()        # rel paths that will be staged
   RICE_META_INC=()       # "rel<TAB>bytes<TAB>mode<TAB>type<TAB>target"
   RICE_DENIED=()         # "rel<TAB>rule"
+  RICE_ALLOWED=()        # "rel<TAB>rule" (rescued via [allow], D40/R3)
   RICE_SCANHITS=()       # "rel<TAB>rule"
   RICE_USER_EXCL=()      # "rel<TAB>user-exclude" (from --exclude-from, D32)
   RICE_SKIPPED_BIG=()    # "rel<TAB>bytes"
@@ -445,13 +548,18 @@ rice_is_cache_path() { # $1 lowercase rel path
 # because whether their target is already covered by the backup can only be
 # known after the full walk. Files found under a followed link's virtual path
 # go through here as usual (deny/cache/size layers see the VIRTUAL path).
-rice_consider() { # $1 home  $2 rel path
+# $3 = 1 skips the L1 deny check (used ONLY by the [allow] rescue pass - the
+# rescue itself already verified the rule is SOFT; every other layer still
+# applies below).
+rice_consider() { # $1 home  $2 rel path  $3 nodeny (1 = [allow] rescue)
   local home=$1 rel=$2
   local rule
-  rule=$(rice_deny_rule_for "$rel")
-  if [ -n "$rule" ]; then
-    RICE_DENIED+=("$rel"$'\t'"$rule")
-    return
+  if [ "${3:-0}" != "1" ]; then
+    rule=$(rice_deny_rule_for "$rel")
+    if [ -n "$rule" ]; then
+      RICE_DENIED+=("$rel"$'\t'"$rule")
+      return
+    fi
   fi
   if rice_is_cache_path "${rel,,}"; then
     if [ -d "$home/$rel" ]; then
@@ -935,7 +1043,7 @@ rice_stage_copy_etc() { # $1 stage
   done
 }
 
-# EXCLUDED.md / SKIPPED.md (names and rules only - never contents, never values)
+# EXCLUDED.md / SKIPPED.md / ALLOWED.md (names and rules only - never contents, never values)
 rice_write_reports() { # $1 stage
   local stage=$1 i
   {
@@ -951,6 +1059,16 @@ rice_write_reports() { # $1 stage
     if [ ${#RICE_USER_EXCL[@]} -eq 0 ]; then printf '(none)\n'; fi
     for i in "${RICE_USER_EXCL[@]}"; do printf -- '- %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
   } > "$stage/reports/EXCLUDED.md"
+  {
+    printf '# Deny overrides ([allow], names only)\n\n'
+    printf 'Generated: %s\n\n' "$(date -u +'%Y-%m-%d %H:%M:%S UTC')\n"
+    printf 'These entries were re-included by an explicit [allow] rule after being\n'
+    printf 'denied by a SOFT deny rule. Every other layer (content scan, cache skip,\n'
+    printf 'per-file cap, budget) still applied to them. Hard-core entries can never\n'
+    printf 'appear here.\n\n'
+    if [ ${#RICE_ALLOWED[@]} -eq 0 ]; then printf '(none)\n'; fi
+    for i in "${RICE_ALLOWED[@]}"; do printf -- '- %s [was: %s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
+  } > "$stage/reports/ALLOWED.md"
   {
     printf '# Skipped items\n\n'
     printf '## Files larger than %s\n' "$(rice_hr_size "$RICE_MAX_FILE_BYTES")"
@@ -1103,10 +1221,28 @@ rice_show_rules() {
       printf '  %-30s (%s)\n' "$i" "${RICE_ROOT_SOURCE[$i]:-rules.conf}"
     done
   fi
-  printf '\ndeny dirs (L1, path prefixes):\n'
-  for i in "${RICE_DENY_DIRS[@]}"; do printf '  %s\n' "$i"; done
+  printf '\ndeny dirs (L1, path prefixes; hard = never overridable via [allow]):\n'
+  for i in "${RICE_DENY_DIRS[@]}"; do
+    if [ -n "${RICE_DENY_HARD_DIR_SET[${i,,}]:-}" ]; then
+      printf '  %-30s (hard)\n' "$i"
+    else
+      printf '  %-30s (soft)\n' "$i"
+    fi
+  done
   printf '\ndeny file globs (L1, matched against the whole path):\n'
-  for i in "${RICE_DENY_GLOBS[@]}"; do printf '  %s\n' "$i"; done
+  for i in "${RICE_DENY_GLOBS[@]}"; do
+    if [ -n "${RICE_DENY_HARD_GLOB_SET[${i,,}]:-}" ]; then
+      printf '  %-30s (hard)\n' "$i"
+    else
+      printf '  %-30s (soft)\n' "$i"
+    fi
+  done
+  if [ ${#RICE_ALLOW[@]} -gt 0 ]; then
+    printf '\nallow overrides ([allow]/--allow, soft rules only):\n'
+    for i in "${!RICE_ALLOW[@]}"; do
+      printf '  %-30s (%s)\n' "$i" "${RICE_ALLOW[$i]}"
+    done
+  fi
   printf '\ncache/junk patterns (L3): .cache/**, */cache|Cache|caches/**,\n'
   printf '  node_modules, __pycache__, .npm, .git, Trash, .config/fcitx/dbus, *.log\n'
   printf '\n/etc allowlist (only with --include-system):\n'
@@ -1144,7 +1280,13 @@ rice_explain() { # $1 home; $2... paths ("" = dump every bucket)
           ;;
       esac
       verdict=""; layer=""; rule=""
-      for i in "${RICE_DENIED[@]}"; do
+      for i in "${RICE_ALLOWED[@]}"; do
+        [ "${i%%$'\t'*}" = "$rel" ] || continue
+        verdict=included; layer='candidate'
+        rule="passes every layer; will be staged (rescued via [allow], was: ${i#*$'\t'}})"
+        break
+      done
+      [ -n "$verdict" ] || for i in "${RICE_DENIED[@]}"; do
         [ "${i%%$'\t'*}" = "$rel" ] || continue
         verdict=excluded; layer='L1 deny'; rule=${i#*$'\t'}; break
       done
@@ -1185,6 +1327,13 @@ rice_explain() { # $1 home; $2... paths ("" = dump every bucket)
         printf '      verdict  : %s\n' "$verdict"
         printf '      layer    : %s\n' "$layer"
         printf '      rule     : %s\n' "$rule"
+        if [ "$layer" = 'L1 deny' ]; then
+          if [ -n "$(rice_hard_rule_for "$rel")" ]; then
+            printf '      override : HARD CORE - never overridable via [allow]\n'
+          else
+            printf '      override : soft rule - [allow] can re-include it\n'
+          fi
+        fi
       elif [ ! -e "$home/$rel" ] && [ ! -L "$home/$rel" ]; then
         printf '      verdict  : not found\n'
         printf '      layer    : -\n'

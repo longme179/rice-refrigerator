@@ -391,6 +391,15 @@ over recollection. Never write secrets here.
   rules parsing; tooling quirk #2: failed MultiEdit may still apply earlier
   edits. Committing + pushing next; NEXT: R3 ([allow] + hard core), R4
   (ack-scan), R5 (GUI + 0.4.0 tarball) per journal 09 / RULES-PLAN.md.
+- [s9] RAN R3 milestone ([allow] + hard core): RICE_DENY_HARD_* +
+  rice_hard_rule_for; [allow]/--allow rescue pass (soft only, hard refusals
+  named); RICE_ALLOWED -> reports/ALLOWED.md + dry-run line + explain
+  override lines + show-rules hard/soft marks; t28; suite **475/0**.
+  Found+fixed: rescue must bypass L1 (rice_consider nodeny arg) else rescued
+  files are re-denied; tooling quirk #3: $'\t' escapes in Edit new_str can
+  arrive as spaces (use runtime printf tabs + byte-checks). PUSHING next;
+  remaining: R4 (ack-scan + expect/hook flow), R5 (GUI Rules tab + 0.4.0
+  tarball).
 
 ## NEXT SESSION bootstrap (when the user returns)
 1. Standard four checks (see "Checks to re-run" above). Expected: origin/main

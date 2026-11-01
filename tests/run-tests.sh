@@ -900,7 +900,7 @@ EOF
   assert_no_match "t27 skipped root not walked" "$out" ".local/share/applications/user.desktop"
   assert_match "t27 cap from rules applied" "$out" "oversized (>1 MiB): "
   assert_match "t27 capped file listed" "$out" ".config/capped/two-m.bin (2 MiB)"
-  assert_match "t27 allow section not yet available" "$out" "not available yet"
+  assert_no_match "t27 allow section IS available since R3" "$out" "not available yet"
   assert_match "t27 skip note" "$out" "include root skipped (rules): .local/share/applications"
   # --show-rules reflects the merged rule set with per-entry sources
   out=$(backup --home "$TW/home" --rules "$TW/rules.conf" --show-rules)
@@ -987,9 +987,69 @@ EOF
   assert_nofile "t27 skipped root not pushed" "$TW/clone/home/.local/share/applications/user.desktop"
 }
 
+t28() { # D40 R3 [allow] overrides + hard core + ALLOWED.md
+  TW=$SUITE/t28; mkdir -p "$TW/home"; make_home "$TW/home"; make_remote test/backup
+  setup_env fedora
+  # soft-deny fixture: a theme asset whose NAME trips the *history* glob
+  mkdir -p "$TW/home/.config/theme-assets"
+  printf 'legacy asset\n' > "$TW/home/.config/theme-assets/legacy-history.txt"
+  cat > "$TW/rules.conf" <<'EOF'
+[allow]
+.bash_history
+.config/theme-assets
+.env
+.ssh
+zzz-nothing
+EOF
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" --repo test/backup --dry-run); rc=$?
+  assert_rc "t28 allow dry-run rc" "$rc" 0
+  # rescued items appear in the upload list + the override summary line
+  assert_match "t28 history file rescued into upload list" "$out" "    .bash_history"
+  assert_match "t28 theme asset rescued" "$out" "    .config/theme-assets/legacy-history.txt"
+  assert_match "t28 override count line" "$out" "deny overridden : 3 item(s)"
+  assert_match "t28 override item named" "$out" ".bash_history [deny-file:.bash_history]"
+  # hard core refused with the rule named; stays in the deny list
+  assert_match "t28 hard refusal warning" "$out" "allow refused (hard core, never overridable): .ssh [deny-dir:.ssh]"
+  assert_match "t28 ssh still denied" "$out" "- .ssh [deny-dir:.ssh]"
+  # unmatched allow entry warns
+  assert_match "t28 unmatched allow warned" "$out" "allow entry matched no denied item: zzz-nothing"
+  # .env is rescued from L1 but STILL blocked by the content scan: [allow]
+  # can re-include a deny match but can never bypass L2
+  assert_match_re "t28 env rescued from L1 but scan-blocked" "$out" '\.env +\[(cred-assign|url-embedded-creds)\]'
+  assert_no_match "t28 env not in upload list" "$out" "    .env"
+  # --show-rules marks hard/soft and lists active allow entries
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" --show-rules)
+  assert_match "t28 show-rules hard mark" "$out" "(hard)"
+  assert_match "t28 show-rules soft mark" "$out" "(soft)"
+  assert_match "t28 show-rules allow section" "$out" "allow overrides ([allow]/--allow, soft rules only)"
+  assert_match "t28 show-rules allow entry listed" "$out" ".bash_history"
+  # --explain names the override path for both rescued and hard entries
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" --explain .bash_history .ssh)
+  assert_match "t28 explain rescued rule line" "$out" "rescued via [allow], was: deny-file:.bash_history"
+  assert_match "t28 explain hard override line" "$out" "override : HARD CORE - never overridable via [allow]"
+  # --allow flag (one-shot, no rules file)
+  out=$(backup --home "$TW/home" --no-rules --allow .bash_history --repo test/backup --dry-run)
+  assert_match "t28 flag allow rescues" "$out" "    .bash_history"
+  assert_match "t28 flag allow count" "$out" "deny overridden : 1 item(s)"
+  out=$(backup --home "$TW/home" --no-rules --allow .bash_history --show-rules)
+  assert_match "t28 flag allow source mark" "$out" "(flag)"
+  # real run: rescued files pushed, hard core and scan-blocked files NOT
+  backup --home "$TW/home" --rules "$TW/rules.conf" --repo test/backup --yes >/dev/null 2>&1
+  git clone -q "$TW/remote-base/test/backup.git" "$TW/clone"
+  assert_file "t28 rescued history pushed" "$TW/clone/home/.bash_history"
+  assert_file "t28 rescued theme asset pushed" "$TW/clone/home/.config/theme-assets/legacy-history.txt"
+  assert_nofile "t28 ssh never pushed" "$TW/clone/home/.ssh/id_rsa"
+  assert_nofile "t28 env never pushed (scan guard held)" "$TW/clone/home/.env"
+  assert_file "t28 ALLOWED.md in repo" "$TW/clone/reports/ALLOWED.md"
+  assert_file_match "t28 ALLOWED.md lists rescue" "$TW/clone/reports/ALLOWED.md" ".bash_history [was: deny-file:.bash_history]"
+  assert_file_match "t28 ALLOWED.md lists subtree rescue" "$TW/clone/reports/ALLOWED.md" "legacy-history.txt"
+  assert_no_match "t28 ALLOWED.md lists no hard refusals" "$(cat "$TW/clone/reports/ALLOWED.md")" ".ssh"
+  canaries_absent "t28 clone (allow never bypassed the scan)" "$TW/clone"
+}
+
 # --------------------------------------------------------------------- runner
 printf 'rice-backup acceptance suite\n  root: %s\n  work: %s\n\n' "$ROOT" "$SUITE"
-TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23 t24 t25 t26 t27"
+TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23 t24 t25 t26 t27 t28"
 for t in $TESTS; do
   printf '%s\n' "-- $t"
   ( "$t" ) || true
