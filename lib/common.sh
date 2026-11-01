@@ -1,7 +1,7 @@
 # lib/common.sh - shared helpers for rice-backup / rice-restore (no secrets here)
 # Sourced by bin/rice-backup.sh and bin/rice-restore.sh.
 
-RICE_VERSION="0.3.0"
+RICE_VERSION="0.4.0"
 RICE_GIT_BASE_DEFAULT="https://github.com"
 RICE_API_BASE_DEFAULT="https://api.github.com"
 

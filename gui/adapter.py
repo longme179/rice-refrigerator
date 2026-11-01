@@ -144,7 +144,8 @@ LARGEST_HEAD = "largest candidates (top 15 by size):"
 LARGEST_RE = re.compile(r"^\s+([0-9.]+)\s*(B|KiB|MiB|GiB)\s{2}(.+)$")
 EXCLUDED_HEAD = "excluded (names only):"
 EXCL_BLOCK_RE = re.compile(
-    r"^  (hard deny list|scan hits|user excluded|oversized \(>50M\)|caches/junk)\s*:\s*(\d+) item\(s\)\s*$"
+    r"^  (hard deny list|scan hits|user excluded|oversized|caches/junk)"
+    r"(?: \([^)]+\))?\s*:\s*(\d+) item\(s\)\s*$"
 )
 EXCL_ITEM_RULE_RE = re.compile(r"^ {4}- (.+?) \[([^\]]+)\]$")
 EXCL_ITEM_SIZE_RE = re.compile(r"^ {4}- (.+?) \(([0-9.]+\s*(?:B|KiB|MiB|GiB))\)$")

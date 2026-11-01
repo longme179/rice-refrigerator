@@ -52,6 +52,10 @@ LIST_FILES=0
 EXPLAIN=0                   # D42 R1: offline diagnostics for given paths
 SHOW_RULES=0                # D42 R1: offline dump of the effective rule set
 EXPLAIN_PATHS=()
+RICE_RULES_ARG=""           # D38 R2: --rules FILE
+RICE_NO_RULES=0             # D38 R2: --no-rules
+RICE_FLAG_FILE_CAP=""       # D42 R2: --file-cap (parsed bytes)
+RICE_FLAG_BUDGET=""         # D42 R2: --budget (parsed bytes)
 RICE_FOLLOW=1                 # D37: follow symlinks (0 with --no-follow-symlinks)
 RICE_FOLLOW_OUTSIDE=0         # D37: also follow targets outside home
 RICE_HOME="${HOME}"
@@ -95,8 +99,21 @@ usage: rice-backup.sh [options]
                       absolute under the home; with no PATH, dump every bucket
                       with reasons. No auth, no repo, nothing staged; exit 0
   --show-rules         offline (D42): print the effective rule set - include
-                      roots, deny dirs/globs, cache patterns, size caps,
-                      symlink settings. No walk, no auth, nothing staged
+                      roots (with per-entry source), deny dirs/globs, cache
+                      patterns, size caps, symlink settings. No walk, no auth
+  --rules FILE         load the customization rules from FILE instead of
+                      ~/.config/rice-backup/rules.conf; --no-rules skips them
+                      entirely. Sections: [include-file] [include-dir]
+                      [skip-dir] [size] (see RULES-PLAN.md; [allow]/[ack-scan]
+                      land in the next milestones)
+  --include-file F    extra top-level home file to consider (repeatable)
+  --include-dir D     extra home-relative root to walk (repeatable; a
+                      deny-listed root is refused with its rule)
+  --skip-dir D        drop a DEFAULT include root from the walk (repeatable)
+  --file-cap SIZE     per-file cap (default 50 MiB; hard max 100 MiB per
+                      GitHub). SIZE: plain bytes or N/NK/NM/NG
+  --budget SIZE       total budget (default 1 GiB). Precedence: env
+                      RICE_TOTAL_MAX_BYTES > this flag > rules.conf > default
   restore ...         run the matching restore tool
   -h, --help          this help
 
@@ -125,6 +142,19 @@ while [ $# -gt 0 ]; do
     --follow-outside-home) RICE_FOLLOW_OUTSIDE=1; shift ;;
     --explain) EXPLAIN=1; shift ;;
     --show-rules) SHOW_RULES=1; shift ;;
+    --rules) [ $# -ge 2 ] || usage 2; RICE_RULES_ARG=$2; shift 2 ;;
+    --no-rules) RICE_NO_RULES=1; shift ;;
+    --include-file) [ $# -ge 2 ] || usage 2; rice_rules_add_file "$2"; shift 2 ;;
+    --include-dir)  [ $# -ge 2 ] || usage 2; rice_rules_add_dir "$2"; shift 2 ;;
+    --skip-dir)     [ $# -ge 2 ] || usage 2; rice_rules_add_skip "$2"; shift 2 ;;
+    --file-cap) [ $# -ge 2 ] || usage 2
+      RICE_FLAG_FILE_CAP=$(rice_rules_parse_size "$2") \
+        || rice_die "--file-cap: invalid size: $2 (plain bytes or N/NK/NM/NG)" 2
+      shift 2 ;;
+    --budget) [ $# -ge 2 ] || usage 2
+      RICE_FLAG_BUDGET=$(rice_rules_parse_size "$2") \
+        || rice_die "--budget: invalid size: $2 (plain bytes or N/NK/NM/NG)" 2
+      shift 2 ;;
     -h|--help) usage 0 ;;
     --) shift; break ;;
     *)
@@ -144,6 +174,11 @@ fi
 
 rice_require_core
 [ -d "$RICE_HOME" ] || rice_die "home directory not found: $RICE_HOME"
+
+# ---- user rules (D38/D39/D42, R2): load + apply BEFORE --show-rules, the
+# walk and --explain so every one of them reflects the merged rule set.
+rice_rules_load "$RICE_RULES_ARG" "$RICE_NO_RULES"
+rice_rules_apply "$RICE_HOME"
 
 # --show-rules (D42): offline dump of the effective rule set. No walk, no auth,
 # no repo; print and exit.
@@ -367,7 +402,7 @@ printf '  scan hits       : %s item(s)\n' "${#RICE_SCANHITS[@]}"
 for i in "${RICE_SCANHITS[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
 printf '  user excluded   : %s item(s)\n' "${#RICE_USER_EXCL[@]}"
 for i in "${RICE_USER_EXCL[@]}"; do printf '    - %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
-printf '  oversized (>50M): %s item(s)\n' "${#RICE_SKIPPED_BIG[@]}"
+printf '  oversized (>%s): %s item(s)\n' "$(rice_hr_size "$RICE_MAX_FILE_BYTES")" "${#RICE_SKIPPED_BIG[@]}"
 for i in "${RICE_SKIPPED_BIG[@]}"; do printf '    - %s (%s)\n' "${i%%$'\t'*}" "$(rice_hr_size "${i#*$'\t'}")"; done
 printf '  caches/junk     : %s item(s)\n' "${#RICE_SKIPPED_CACHE[@]}"
 for i in "${RICE_SKIPPED_CACHE[@]}"; do printf '    - %s\n' "$i"; done

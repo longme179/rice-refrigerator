@@ -4,9 +4,11 @@
 #   L2 content scan            -> EXCLUDED.md (rule name, never a value)
 #   L3 hygiene: caches, >50MB  -> SKIPPED.md
 
-RICE_MAX_FILE_BYTES=$((50 * 1024 * 1024))     # GitHub rejects >100MB; stay well below
+RICE_MAX_FILE_BYTES=$((50 * 1024 * 1024))     # default per-file cap (--file-cap / rules.conf [size] override)
 RICE_TOTAL_WARN_BYTES=$((800 * 1024 * 1024))  # soft warning threshold
-RICE_TOTAL_MAX_BYTES="${RICE_TOTAL_MAX_BYTES:-$((1024 * 1024 * 1024))}"  # hard budget (1 GiB; --allow-oversize overrides)
+# hard budget: RESOLVED by rice_rules_apply (env RICE_TOTAL_MAX_BYTES > --budget
+# > rules.conf [size] total_budget > default 1 GiB; --allow-oversize overrides)
+RICE_TOTAL_MAX_BYTES="${RICE_TOTAL_MAX_BYTES:-}"
 
 # ---- L1: hard deny - directories (paths relative to $HOME, case-insensitive) ----
 RICE_DENY_DIRS=(
@@ -170,6 +172,215 @@ RICE_ETC_GLOBS=(
   '/etc/systemd/system/*.service'
   '/etc/systemd/system/*.timer'
 )
+
+# ---- user rules (D38/D39/D42-size, milestone R2) ------------------------------
+# Loaded from ~/.config/rice-backup/rules.conf (or --rules FILE / RICE_RULES
+# env; --no-rules skips loading). Precedence everywhere: CLI flag > rules.conf
+# > built-in default (one documented exception: env RICE_TOTAL_MAX_BYTES still
+# wins for back-compat). [allow] and [ack-scan] land in milestones R3/R4.
+RICE_EXTRA_FILES=()    # [include-file] + --include-file: extra top-level files
+RICE_EXTRA_DIRS=()     # [include-dir]  + --include-dir : extra walked roots
+RICE_SKIP_DIRS=()      # [skip-dir]     + --skip-dir    : default roots to drop
+RICE_RULES_FILE=""     # resolved rules file ("" when none was loaded)
+RICE_RULES_FILE_CAP="" # [size] file_cap
+RICE_RULES_BUDGET=""   # [size] total_budget
+declare -g -A RICE_ROOT_SOURCE=()   # root/file -> default | rules.conf | flag
+
+rice_rules_default_path() {
+  printf '%s/.config/rice-backup/rules.conf' "${XDG_CONFIG_HOME:-${HOME:-.}/.config}"
+}
+
+# Validate one rules entry (also used by the repeatable flags): strips
+# comments/whitespace, refuses absolute paths and `..`. Prints the cleaned
+# entry and returns 0, or warns and returns 1.
+rice_rules_clean_entry() { # $1 raw line
+  local e=$1
+  e=${e%%#*}
+  e=${e#"${e%%[![:space:]]*}"}
+  e=${e%"${e##*[![:space:]]}"}
+  [ -n "$e" ] || return 1
+  case "$e" in
+    /*|*..*|.|'')
+      rice_warn "rules entry ignored (must be a path relative to the home): $e"
+      return 1
+      ;;
+  esac
+  printf '%s' "$e"
+}
+
+# Parse a size value: plain bytes or N / NK / NM / NG (iB, base 1024), case
+# insensitive. Prints the byte count and returns 0, or prints nothing.
+rice_rules_parse_size() { # $1 raw value
+  local v=${1//[[:space:]]/} n
+  [ -n "$v" ] || return 1
+  case "$v" in
+    *[!0-9KkMmGgIiBb]*) return 1 ;;
+  esac
+  v=${v^^}
+  case "$v" in
+    *KIB) n=${v%KIB}; v=$((n * 1024)) ;;
+    *MIB) n=${v%MIB}; v=$((n * 1048576)) ;;
+    *GIB) n=${v%GIB}; v=$((n * 1073741824)) ;;
+    *K)   n=${v%K};   v=$((n * 1024)) ;;
+    *M)   n=${v%M};   v=$((n * 1048576)) ;;
+    *G)   n=${v%G};   v=$((n * 1073741824)) ;;
+  esac
+  case "$v" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s' "$v"
+}
+
+# Parse the rules file into the RICE_EXTRA_* / RICE_RULES_* globals. Unknown
+# sections and the not-yet-available ones ([allow]/[ack-scan]) are warned and
+# skipped - loading can never fail the run on its own.
+rice_rules_load() { # $1 explicit file ("" = RICE_RULES env, then default path), $2 no_rules
+  local file=$1 no=$2 line section="" e v key
+  [ "$no" -eq 1 ] && return 0
+  if [ -z "$file" ] && [ -n "${RICE_RULES:-}" ]; then file=$RICE_RULES; fi
+  if [ -n "$file" ]; then
+    if [ ! -f "$file" ]; then
+      rice_warn "rules file not found: $file (continuing with defaults)"
+      return 0
+    fi
+  else
+    file=$(rice_rules_default_path)
+    [ -f "$file" ] || return 0
+  fi
+  RICE_RULES_FILE=$file
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%%#*}
+    line=${line#"${line%%[![:space:]]*}"}
+    line=${line%"${line##*[![:space:]]*}"}
+    [ -n "$line" ] || continue
+    case "$line" in
+      \[*)
+        section=${line#[}; section=${section%]}; section=${section,,}
+        ;;
+      *=*)
+        v=${line#*=}
+        v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}
+        key=${line%%=*}
+        key=${key#"${key%%[![:space:]]*}"}; key=${key%"${key##*[![:space:]]}"}
+        if [ "$section" = "size" ]; then
+          case "$key" in
+            file_cap)
+              if RICE_RULES_FILE_CAP=$(rice_rules_parse_size "$v"); then :; else
+                rice_warn "invalid file_cap in rules (ignored): $v"
+                RICE_RULES_FILE_CAP=""
+              fi ;;
+            total_budget)
+              if RICE_RULES_BUDGET=$(rice_rules_parse_size "$v"); then :; else
+                rice_warn "invalid total_budget in rules (ignored): $v"
+                RICE_RULES_BUDGET=""
+              fi ;;
+            *) rice_warn "unknown [size] key ignored: $key" ;;
+          esac
+        else
+          rice_warn "key=value line outside [size] ignored: $line"
+        fi
+        ;;
+      *)
+        e=$(rice_rules_clean_entry "$line") || continue
+        case "$section" in
+          include-file)
+            RICE_EXTRA_FILES+=("$e")
+            [ -n "${RICE_ROOT_SOURCE[$e]:-}" ] || RICE_ROOT_SOURCE["$e"]='rules.conf' ;;
+          include-dir)
+            RICE_EXTRA_DIRS+=("$e")
+            [ -n "${RICE_ROOT_SOURCE[$e]:-}" ] || RICE_ROOT_SOURCE["$e"]='rules.conf' ;;
+          skip-dir)
+            RICE_SKIP_DIRS+=("$e") ;;
+          allow|ack-scan)
+            rice_warn "rules section [$section] is not available yet (lands in milestone R3/R4); entry ignored: $e" ;;
+          *) rice_warn "unknown rules section ignored: [$section] (entry: $e)" ;;
+        esac
+        ;;
+    esac
+  done <"$file"
+}
+
+# Flag helpers (repeatable CLI options append with source=flag)
+rice_rules_add_file() { local e; e=$(rice_rules_clean_entry "$1") || return 0
+  RICE_EXTRA_FILES+=("$e"); RICE_ROOT_SOURCE["$e"]='flag'; }
+rice_rules_add_dir() { local e; e=$(rice_rules_clean_entry "$1") || return 0
+  RICE_EXTRA_DIRS+=("$e"); RICE_ROOT_SOURCE["$e"]='flag'; }
+rice_rules_add_skip() { local e; e=$(rice_rules_clean_entry "$1") || return 0
+  RICE_SKIP_DIRS+=("$e"); RICE_ROOT_SOURCE["$e"]='flag'; }
+
+# Apply the loaded rules + flags: resolve the caps, merge extra and skipped
+# roots into the include arrays (with per-entry sources for --show-rules),
+# refuse impossible values. MUST run before the walk, --show-rules and
+# --explain. Refusals: cap above GitHub's 100 MiB; deny-listed include-roots
+# (no root can ever bypass L1).
+rice_rules_apply() { # $1 home
+  local home=$1 r d f found rule dup keep
+  # mark the built-in entries so --show-rules can attribute every line
+  for d in "${RICE_HOME_DIRS[@]}"; do
+    [ -n "${RICE_ROOT_SOURCE[$d]:-}" ] || RICE_ROOT_SOURCE["$d"]='default'
+  done
+  for f in "${RICE_HOME_FILES[@]}"; do
+    [ -n "${RICE_ROOT_SOURCE[$f]:-}" ] || RICE_ROOT_SOURCE["$f"]='default'
+  done
+  # ---- caps (flag > rules.conf > default; env RICE_TOTAL_MAX_BYTES wins)
+  if [ -n "${RICE_FLAG_FILE_CAP:-}" ]; then
+    RICE_MAX_FILE_BYTES=$RICE_FLAG_FILE_CAP
+  elif [ -n "$RICE_RULES_FILE_CAP" ]; then
+    RICE_MAX_FILE_BYTES=$RICE_RULES_FILE_CAP
+  fi
+  if [ "$RICE_MAX_FILE_BYTES" -gt $((100 * 1024 * 1024)) ]; then
+    rice_die "file cap $(rice_hr_size "$RICE_MAX_FILE_BYTES") exceeds GitHub's 100 MiB per-file limit - refusing (the push would fail)" 2
+  fi
+  if [ -n "${RICE_TOTAL_MAX_BYTES:-}" ]; then
+    :                                     # env wins (back-compat, tests rely on it)
+  elif [ -n "${RICE_FLAG_BUDGET:-}" ]; then
+    RICE_TOTAL_MAX_BYTES=$RICE_FLAG_BUDGET
+  elif [ -n "$RICE_RULES_BUDGET" ]; then
+    RICE_TOTAL_MAX_BYTES=$RICE_RULES_BUDGET
+  else
+    RICE_TOTAL_MAX_BYTES=$((1024 * 1024 * 1024))
+  fi
+  # ---- [skip-dir]: remove matching default roots from the walk entirely
+  for r in "${RICE_SKIP_DIRS[@]}"; do
+    found=0; keep=()
+    for d in "${RICE_HOME_DIRS[@]}"; do
+      if [ "$d" = "$r" ]; then found=1; else keep+=("$d"); fi
+    done
+    if [ "$found" = 1 ]; then
+      RICE_HOME_DIRS=("${keep[@]}")
+      rice_info "include root skipped (rules): $r"
+    else
+      rice_warn "skip-dir entry is not a default include root: $r"
+    fi
+  done
+  # ---- [include-dir]: extra walked roots (deny-listed roots refused)
+  for r in "${RICE_EXTRA_DIRS[@]}"; do
+    rule=$(rice_deny_rule_for "$r")
+    if [ -n "$rule" ]; then
+      rice_warn "include-dir entry refused (deny-listed): $r [$rule]"
+      continue
+    fi
+    dup=0
+    for d in "${RICE_HOME_DIRS[@]}"; do [ "$d" = "$r" ] && dup=1; done
+    [ "$dup" = 1 ] && continue
+    if [ ! -d "$home/$r" ] && [ ! -L "$home/$r" ]; then
+      rice_warn "include-dir entry does not exist in the home: $r"
+      continue
+    fi
+    RICE_HOME_DIRS+=("$r")
+  done
+  # ---- [include-file]: extra top-level files
+  for r in "${RICE_EXTRA_FILES[@]}"; do
+    dup=0
+    for f in "${RICE_HOME_FILES[@]}"; do [ "$f" = "$r" ] && dup=1; done
+    [ "$dup" = 1 ] && continue
+    if [ ! -e "$home/$r" ] && [ ! -L "$home/$r" ]; then
+      rice_warn "include-file entry does not exist in the home: $r"
+      continue
+    fi
+    RICE_HOME_FILES+=("$r")
+  done
+}
 
 # ------------------------------------------------------------------ state
 rice_collect_init() {
@@ -865,6 +1076,11 @@ rice_show_rules() {
   local i
   printf '=== rice-backup effective rules ===\n'
   printf 'version     : %s\n' "$RICE_VERSION"
+  if [ -n "$RICE_RULES_FILE" ]; then
+    printf 'rules file  : %s (loaded)\n' "$RICE_RULES_FILE"
+  else
+    printf 'rules file  : (none - defaults only; create %s to customize)\n' "$(rice_rules_default_path)"
+  fi
   printf 'file cap    : %s per file (GitHub rejects files >100 MiB)\n' \
     "$(rice_hr_size "$RICE_MAX_FILE_BYTES")"
   printf 'total budget: %s (a real run above it needs --allow-oversize)\n' \
@@ -873,10 +1089,20 @@ rice_show_rules() {
     "${RICE_FOLLOW:-1}" "${RICE_FOLLOW_OUTSIDE:-0}"
   printf '\ninclude files (top-level, exact name under the home):\n'
   if [ ${#RICE_HOME_FILES[@]} -eq 0 ]; then printf '  (none)\n'; fi
-  for i in "${RICE_HOME_FILES[@]}"; do printf '  %s\n' "$i"; done
+  for i in "${RICE_HOME_FILES[@]}"; do
+    printf '  %-30s (%s)\n' "$i" "${RICE_ROOT_SOURCE[$i]:-default}"
+  done
   printf '\ninclude dirs (walked recursively):\n'
   if [ ${#RICE_HOME_DIRS[@]} -eq 0 ]; then printf '  (none)\n'; fi
-  for i in "${RICE_HOME_DIRS[@]}"; do printf '  %s\n' "$i"; done
+  for i in "${RICE_HOME_DIRS[@]}"; do
+    printf '  %-30s (%s)\n' "$i" "${RICE_ROOT_SOURCE[$i]:-default}"
+  done
+  if [ ${#RICE_SKIP_DIRS[@]} -gt 0 ]; then
+    printf '\nskipped include roots ([skip-dir], not walked at all):\n'
+    for i in "${RICE_SKIP_DIRS[@]}"; do
+      printf '  %-30s (%s)\n' "$i" "${RICE_ROOT_SOURCE[$i]:-rules.conf}"
+    done
+  fi
   printf '\ndeny dirs (L1, path prefixes):\n'
   for i in "${RICE_DENY_DIRS[@]}"; do printf '  %s\n' "$i"; done
   printf '\ndeny file globs (L1, matched against the whole path):\n'

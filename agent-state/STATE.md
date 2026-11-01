@@ -381,7 +381,16 @@ over recollection. Never write secrets here.
 - [s9] RAN R1 diagnostics milestone: --explain/--show-rules shipped, t26
   added (46 assertions), suite **402/0**; found+fixed the Edit-tool tab
   normalization quirk in t25 needles (runtime printf tabs now, see journal
-  09); committing + pushing next.
+  09); PUSHED as 6fd2d4f (S4 clean, hook live).
+- [s9] RAN R2 milestone (version 0.4.0): rules.conf loader ([include-file]/
+  [include-dir]/[skip-dir]/[size]) + flags --rules/--no-rules/--include-file/
+  --include-dir/--skip-dir/--file-cap/--budget + precedence + 100 MiB cap
+  ceiling + dynamic oversized label + --show-rules sources + GUI adapter
+  oversized-key fix + README section + t27; suite **447/0**; contract rig
+  ALL OK. Found+fixed: broken rtrim idiom (trailing star = no-op) in the new
+  rules parsing; tooling quirk #2: failed MultiEdit may still apply earlier
+  edits. Committing + pushing next; NEXT: R3 ([allow] + hard core), R4
+  (ack-scan), R5 (GUI + 0.4.0 tarball) per journal 09 / RULES-PLAN.md.
 
 ## NEXT SESSION bootstrap (when the user returns)
 1. Standard four checks (see "Checks to re-run" above). Expected: origin/main

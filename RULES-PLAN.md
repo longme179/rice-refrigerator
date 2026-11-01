@@ -213,13 +213,13 @@ a link to a soft-allowed target follows only if the target itself is allowed.
 
 ## 9. Milestones
 
-| ID | Scope | Deliverables | Tests |
-|----|-------|--------------|-------|
-| R1 | diagnostics only, zero behavior change | `--explain`, `--show-rules`, reason strings verified | t26 |
-| R2 | rules.conf + roots + sizes + `--rules/--no-rules`, flags, version 0.4.0 | D38+D39+D42 size part | t27 |
-| R3 | allow-list + hard core + ALLOWED.md | D40 | t28 |
-| R4 | ack-scan + expect flow + hook + ACKNOWLEDGED.md | D41 | t29 |
-| R5 | GUI Rules tab + explain view + docs + 0.4.0 tarball | §8 | adapter tests + checklist |
+| ID | Scope | Deliverables | Tests | Status |
+|----|-------|--------------|-------|--------|
+| R1 | diagnostics only, zero behavior change | `--explain`, `--show-rules`, reason strings verified | t26 | ✅ done (suite 402/0, pushed 6fd2d4f) |
+| R2 | rules.conf + roots + sizes + `--rules/--no-rules`, flags, version 0.4.0 | D38+D39+D42 size part | t27 | ✅ done (suite 447/0, contract rig OK) |
+| R3 | allow-list + hard core + ALLOWED.md | D40 | t28 | next |
+| R4 | ack-scan + expect flow + hook + ACKNOWLEDGED.md | D41 | t29 | pending |
+| R5 | GUI Rules tab + explain view + docs + 0.4.0 tarball | §8 | adapter tests + checklist | pending |
 
 Each milestone: suite green (old assertions unmodified where the feature
 permits) → S4 tree+range scan → commit → push → journal updated.

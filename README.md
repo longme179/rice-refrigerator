@@ -93,6 +93,9 @@ it (e.g. into a password manager or an unreferenced include), and re-run.
                      [--allow-oversize] [--exclude-from FILE]
                      [--export FILE.tar.gz] [--list-files]
                      [--no-follow-symlinks] [--follow-outside-home]
+                     [--rules FILE] [--no-rules] [--include-file F] [--include-dir D]
+                     [--skip-dir D] [--file-cap SIZE] [--budget SIZE]
+                     [--explain [PATH...]] [--show-rules]
 ```
 
 | option | effect |
@@ -109,6 +112,11 @@ it (e.g. into a password manager or an unreferenced include), and re-run.
 | `--list-files` | print the post-exclusion candidate list (`path<TAB>bytes` per line) and exit — offline and read-only; what the GUI builds its checklist from |
 | `--no-follow-symlinks` | store symlinks as link entries only (pre-0.3.0 behavior). By default symlinks whose target is **not already inside the backup** are followed — see below. |
 | `--follow-outside-home` | also follow symlink targets that live outside `$HOME` (default: those links are kept as links and reported) |
+| `--rules FILE` / `--no-rules` | load the customization rules from `FILE` instead of `~/.config/rice-backup/rules.conf`, or skip them entirely — see below |
+| `--include-file F`, `--include-dir D`, `--skip-dir D` | one-shot equivalents of the rules-file sections (repeatable; a deny-listed root is refused with its rule) |
+| `--file-cap SIZE`, `--budget SIZE` | per-file cap (default 50 MiB, hard max 100 MiB per GitHub) and total budget (default 1 GiB). `SIZE`: plain bytes or `N`/`NK`/`NM`/`NG`. Precedence: env `RICE_TOTAL_MAX_BYTES` > `--budget` > rules.conf > default |
+| `--explain [PATH...]` | **offline diagnostics** — print the verdict chain (`verdict`/`layer`/`rule`) for each PATH, or dump every bucket with reasons. No auth, no repo, nothing staged |
+| `--show-rules` | **offline** — print the effective rule set (include roots with per-entry source, deny dirs/globs, cache patterns, caps). No walk, no auth |
 
 Authentication (in order of preference):
 
@@ -123,6 +131,27 @@ Target repo handling: if the repo does not exist it is created **private**; if
 it exists and is **public** you get a loud warning and must type the exact
 `OWNER/NAME` to proceed; if privacy cannot be determined you are asked to
 confirm before anything is pushed.
+
+### Customizing what gets backed up (`rules.conf`, roots, caps)
+
+`~/.config/rice-backup/rules.conf` (0600, plain text, `#` comments) customizes
+the selection **persistently** — CLI flags override it, and the GUI reads and
+writes the same file:
+
+```ini
+[include-file]     # extra TOP-LEVEL home files (e.g. .Xresources)
+[include-dir]      # extra home-relative roots to walk (e.g. Dev/dotfiles)
+[skip-dir]         # DEFAULT roots to drop from the walk (e.g. .local/share/wallpapers)
+[size]             # file_cap = 50MiB / total_budget = 1GiB (bytes or NK/NM/NG)
+```
+
+Every other layer still applies inside new roots — the deny list, the content
+scan, cache skipping, the per-file cap — so customization can never bypass a
+security layer. A deny-listed `[include-dir]` entry is refused with its rule
+named. `--show-rules` prints the merged rule set with the source of every
+entry; `--explain PATH` tells you exactly which layer and rule claims a path
+before you customize anything. `[allow]` and `[ack-scan]` (deny-list and
+scan-hit overrides) land in the next milestones — see `RULES-PLAN.md`.
 
 ### Selecting what gets backed up (`--exclude-from`)
 

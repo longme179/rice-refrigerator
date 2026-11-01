@@ -866,9 +866,130 @@ t26() { # D42 R1 --explain / --show-rules: offline diagnostics, no auth/repo
   assert_match "t26 unknown option message" "$out" "unknown option: --bogus-flag"
 }
 
+t27() { # D38/D39/D42 R2 rules.conf + include roots + size flags (v0.4.0)
+  TW=$SUITE/t27; mkdir -p "$TW/home"; make_home "$TW/home"; make_remote test/backup
+  setup_env fedora
+  # custom pieces: extra top-level file, extra root, a 2 MiB file for cap tests
+  printf 'xr contents\n' > "$TW/home/.Xresources"
+  mkdir -p "$TW/home/Dev/dotfiles"
+  printf 'export A=1\n' > "$TW/home/Dev/dotfiles/vars.sh"
+  mkdir -p "$TW/home/.config/capped"
+  truncate -s 2097152 "$TW/home/.config/capped/two-m.bin"
+  cat > "$TW/rules.conf" <<'EOF'
+# t27 rules
+[include-file]
+.Xresources
+
+[include-dir]
+Dev/dotfiles
+
+[skip-dir]
+.local/share/applications
+
+[allow]
+.config/theme-assets/x
+
+[size]
+file_cap = 1MiB
+total_budget = 12MiB
+EOF
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" --repo test/backup --dry-run); rc=$?
+  assert_rc "t27 rules dry-run rc" "$rc" 0
+  assert_match "t27 extra top-level file included" "$out" "    .Xresources"
+  assert_match "t27 extra root walked" "$out" "    Dev/dotfiles/vars.sh"
+  assert_no_match "t27 skipped root not walked" "$out" ".local/share/applications/user.desktop"
+  assert_match "t27 cap from rules applied" "$out" "oversized (>1 MiB): "
+  assert_match "t27 capped file listed" "$out" ".config/capped/two-m.bin (2 MiB)"
+  assert_match "t27 allow section not yet available" "$out" "not available yet"
+  assert_match "t27 skip note" "$out" "include root skipped (rules): .local/share/applications"
+  # --show-rules reflects the merged rule set with per-entry sources
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" --show-rules)
+  assert_match "t27 show-rules rules file line" "$out" "rules file  : $TW/rules.conf (loaded)"
+  assert_match "t27 show-rules default source" "$out" ".config"
+  assert_match "t27 show-rules default mark" "$out" "(default)"
+  assert_match "t27 show-rules rules mark" "$out" "(rules.conf)"
+  assert_match "t27 show-rules skipped section" "$out" "skipped include roots"
+  assert_match "t27 show-rules cap" "$out" "file cap    : 1 MiB per file"
+  assert_match "t27 show-rules budget" "$out" "total budget: 12 MiB"
+  # flag precedence over rules: --file-cap 5MiB beats [size] 1MiB
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" --file-cap 5MiB --repo test/backup --dry-run)
+  assert_match "t27 flag cap label" "$out" "oversized (>5 MiB): "
+  assert_match "t27 capped file passes at 5MiB" "$out" "two-m.bin"
+  assert_no_match "t27 no 1MiB cap anymore" "$out" "oversized (>1 MiB):"
+  # caps above GitHub's 100 MiB are refused
+  out=$(backup --home "$TW/home" --file-cap 200MiB --repo test/backup --dry-run 2>&1); rc=$?
+  assert_rc "t27 cap above GitHub limit refused (rc 2)" "$rc" 2
+  assert_match "t27 cap refusal message" "$out" "exceeds GitHub's 100 MiB per-file limit"
+  # invalid size flag values are usage errors
+  out=$(backup --home "$TW/home" --file-cap abc --repo test/backup --dry-run 2>&1); rc=$?
+  assert_rc "t27 invalid file-cap rc" "$rc" 2
+  assert_match "t27 invalid file-cap message" "$out" "--file-cap: invalid size: abc"
+  # --no-rules wins over --rules (documented debugging aid)
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" --no-rules --repo test/backup --dry-run)
+  assert_no_match "t27 no-rules: extra file absent" "$out" "    .Xresources"
+  assert_no_match "t27 no-rules: extra root absent" "$out" "    Dev/dotfiles/vars.sh"
+  assert_match "t27 no-rules: default cap back" "$out" "oversized (>50 MiB): "
+  # invalid entries / unknown sections are warned; the run still succeeds
+  cat > "$TW/bad-rules.conf" <<'EOF'
+[include-dir]
+.ssh
+/abs/path
+[skip-dir]
+Documents
+[whatever]
+foo
+[size]
+file_cap = abc
+EOF
+  out=$(backup --home "$TW/home" --rules "$TW/bad-rules.conf" --repo test/backup --dry-run); rc=$?
+  assert_rc "t27 bad rules still run" "$rc" 0
+  assert_match "t27 deny-listed root refused" "$out" "include-dir entry refused (deny-listed): .ssh [deny-dir:.ssh]"
+  assert_match "t27 absolute entry ignored" "$out" "must be a path relative to the home"
+  assert_match "t27 non-default skip warned" "$out" "not a default include root: Documents"
+  assert_match "t27 unknown section warned" "$out" "unknown rules section ignored"
+  assert_match "t27 invalid size warned" "$out" "invalid file_cap"
+  # repeatable flags without any rules file
+  out=$(backup --home "$TW/home" --no-rules --include-file .Xresources \
+    --include-dir Dev/dotfiles --skip-dir .local/share/applications \
+    --repo test/backup --dry-run)
+  assert_match "t27 flag include-file" "$out" "    .Xresources"
+  assert_match "t27 flag include-dir" "$out" "    Dev/dotfiles/vars.sh"
+  assert_no_match "t27 flag skip-dir" "$out" ".local/share/applications/user.desktop"
+  out=$(backup --home "$TW/home" --no-rules --include-dir Dev/dotfiles --show-rules)
+  assert_match "t27 flag source mark" "$out" "(flag)"
+  # budget flag: tiny budget trips the warning (dry-run) and exit 5 (real run)
+  truncate -s 2097152 "$TW/home/.config/capped/two-m.bin"
+  out=$(backup --home "$TW/home" --no-rules --file-cap 5MiB --budget 1MiB \
+    --repo test/backup --dry-run); rc=$?
+  assert_rc "t27 dry-run with tiny budget rc" "$rc" 0
+  assert_match "t27 budget flag warning" "$out" "exceeds the 1 MiB budget"
+  assert_match "t27 budget warning advises flag" "$out" "needs --allow-oversize"
+  out=$(backup --home "$TW/home" --no-rules --file-cap 5MiB --budget 1MiB \
+    --repo test/backup --yes 2>&1); rc=$?
+  assert_rc "t27 real run over tiny budget exits 5" "$rc" 5
+  # env RICE_TOTAL_MAX_BYTES still beats --budget (back-compat, t22 relies on it)
+  RICE_TOTAL_MAX_BYTES=$((20*1024*1024)); export RICE_TOTAL_MAX_BYTES
+  out=$(backup --home "$TW/home" --no-rules --file-cap 5MiB --budget 1MiB \
+    --repo test/backup --dry-run)
+  assert_no_match "t27 env beats budget flag" "$out" "exceeds the 1 MiB budget"
+  unset RICE_TOTAL_MAX_BYTES
+  # --explain reflects the merged roots
+  out=$(backup --home "$TW/home" --rules "$TW/rules.conf" \
+    --explain Dev/dotfiles/vars.sh .local/share/applications/user.desktop)
+  assert_match "t27 explain extra-root file is candidate" "$out" "layer    : candidate"
+  assert_match "t27 explain skipped-root file not considered" "$out" "outside every include root"
+  # real run with rules: extra root pushed, skipped root dropped (mirror clean)
+  backup --home "$TW/home" --rules "$TW/rules.conf" --file-cap 5MiB \
+    --repo test/backup --yes >/dev/null 2>&1
+  git clone -q "$TW/remote-base/test/backup.git" "$TW/clone"
+  assert_file "t27 extra root pushed" "$TW/clone/home/Dev/dotfiles/vars.sh"
+  assert_file "t27 extra top-level pushed" "$TW/clone/home/.Xresources"
+  assert_nofile "t27 skipped root not pushed" "$TW/clone/home/.local/share/applications/user.desktop"
+}
+
 # --------------------------------------------------------------------- runner
 printf 'rice-backup acceptance suite\n  root: %s\n  work: %s\n\n' "$ROOT" "$SUITE"
-TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23 t24 t25 t26"
+TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23 t24 t25 t26 t27"
 for t in $TESTS; do
   printf '%s\n' "-- $t"
   ( "$t" ) || true

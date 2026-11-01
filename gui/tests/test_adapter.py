@@ -67,7 +67,7 @@ excluded (names only):
   user excluded   : 2 item(s)
     - .config/vim/vimrc [user-exclude]
     - .bashrc [user-exclude]
-  oversized (>50M): 1 item(s)
+  oversized (>50 MiB): 1 item(s)
     - .config/bigapp/data.bin (60 MiB)
   caches/junk     : 2 item(s)
     - .cache/
@@ -108,7 +108,7 @@ excluded (names only):
   scan hits       : 1 item(s)
     - .config/mango/scripts/networks.py [aws-secret-label]
   user excluded   : 0 item(s)
-  oversized (>50M): 0 item(s)
+  oversized (>50 MiB): 0 item(s)
   caches/junk     : 26 item(s)
     - .cache/
     - .var/app/org.mozilla.firefox/cache/
@@ -138,7 +138,7 @@ excluded (names only):
     - .ssh [deny-dir]
   scan hits       : 0 item(s)
   user excluded   : 0 item(s)
-  oversized (>50M): 0 item(s)
+  oversized (>50 MiB): 0 item(s)
   caches/junk     : 1 item(s)
     - .cache/
 
@@ -195,7 +195,7 @@ class TestParseDryRun(unittest.TestCase):
         user = s.block("user excluded")
         self.assertEqual(user.count, 2)
         self.assertIn((".bashrc", "user-exclude"), user.items)
-        big = s.block("oversized (>50M)")
+        big = s.block("oversized")
         self.assertEqual(big.items[0][0], ".config/bigapp/data.bin")
         self.assertEqual(big.items[0][1], "60 MiB")
         cache = s.block("caches/junk")
@@ -213,6 +213,17 @@ class TestParseDryRun(unittest.TestCase):
         self.assertEqual(s.links_followed, 2)
         self.assertEqual(s.files_from_links, 18)
         self.assertEqual(s.links_kept, 5)
+
+    def test_oversized_block_accepts_custom_cap(self):
+        # D42/R2: the dry-run label carries the ACTIVE per-file cap, so the
+        # block key stays "oversized" whatever the cap text is.
+        text = DRYRUN_NORMAL.replace(
+            "  oversized (>50 MiB): 1 item(s)",
+            "  oversized (>1 MiB): 2 item(s)")
+        s = adapter.parse_dry_run(text)
+        self.assertTrue(s.parsed_ok)
+        big = s.block("oversized")
+        self.assertEqual(big.count, 2)
         # the line must NOT be mistaken for a section
         names = {sec.name for sec in s.sections}
         self.assertNotIn("symlinks followed", names)

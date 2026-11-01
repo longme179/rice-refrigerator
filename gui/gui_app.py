@@ -664,7 +664,7 @@ class ReviewWindow(Gtk.ApplicationWindow):
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         nb = Gtk.Notebook()
         for key, title in (("hard deny list", "Deny"), ("scan hits", "Scan hits"),
-                           ("oversized (>50M)", "Oversized"),
+                           ("oversized", "Oversized"),
                            ("caches/junk", "Caches")):
             block = summary.block(key)
             items = block.items if block else []
