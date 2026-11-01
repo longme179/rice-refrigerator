@@ -6,6 +6,7 @@
 #   rice-backup.sh [--dry-run] [--yes] [--include-system] [--repo OWNER/NAME]
 #                  [--home DIR] [--keep-stage] [--allow-oversize]
 #                  [--exclude-from FILE] [--export FILE.tar.gz] [--list-files]
+#                  [--explain [PATH...]] [--show-rules]
 #   rice-backup.sh restore [rice-restore options...]   (passes through)
 #   rice-backup.sh --help
 #
@@ -48,6 +49,9 @@ ALLOW_OVERSIZE=0
 EXCLUDE_FROM=""
 EXPORT_PATH=""
 LIST_FILES=0
+EXPLAIN=0                   # D42 R1: offline diagnostics for given paths
+SHOW_RULES=0                # D42 R1: offline dump of the effective rule set
+EXPLAIN_PATHS=()
 RICE_FOLLOW=1                 # D37: follow symlinks (0 with --no-follow-symlinks)
 RICE_FOLLOW_OUTSIDE=0         # D37: also follow targets outside home
 RICE_HOME="${HOME}"
@@ -85,6 +89,14 @@ usage: rice-backup.sh [options]
                       symlinks.tsv (restore it later with rice-restore --relink)
   --follow-outside-home  also follow symlink targets that live outside $HOME
                       (default: those links are kept as links and reported)
+  --explain [PATH...] offline diagnostics (D42): run the full read-only
+                      collection, then print the verdict chain
+                      (verdict/layer/rule) for each PATH - home-relative or
+                      absolute under the home; with no PATH, dump every bucket
+                      with reasons. No auth, no repo, nothing staged; exit 0
+  --show-rules         offline (D42): print the effective rule set - include
+                      roots, deny dirs/globs, cache patterns, size caps,
+                      symlink settings. No walk, no auth, nothing staged
   restore ...         run the matching restore tool
   -h, --help          this help
 
@@ -111,17 +123,39 @@ while [ $# -gt 0 ]; do
     --list-files) LIST_FILES=1; shift ;;
     --no-follow-symlinks) RICE_FOLLOW=0; shift ;;
     --follow-outside-home) RICE_FOLLOW_OUTSIDE=1; shift ;;
+    --explain) EXPLAIN=1; shift ;;
+    --show-rules) SHOW_RULES=1; shift ;;
     -h|--help) usage 0 ;;
     --) shift; break ;;
-    *) printf 'unknown option: %s\n' "$1" >&2; usage 2 ;;
+    *)
+      if [ "$EXPLAIN" -eq 1 ]; then
+        EXPLAIN_PATHS+=("$1"); shift
+      else
+        printf 'unknown option: %s\n' "$1" >&2; usage 2
+      fi
+      ;;
   esac
 done
+# positional paths after `--` also feed --explain
+if [ "$EXPLAIN" -eq 1 ] && [ $# -gt 0 ]; then
+  EXPLAIN_PATHS+=("$@")
+  shift $#
+fi
 
 rice_require_core
 [ -d "$RICE_HOME" ] || rice_die "home directory not found: $RICE_HOME"
 
-# offline modes need no GitHub access: --export (D33) and --list-files (D32 GUI)
-if [ -n "$EXPORT_PATH" ] || [ "$LIST_FILES" -eq 1 ]; then
+# --show-rules (D42): offline dump of the effective rule set. No walk, no auth,
+# no repo; print and exit.
+if [ "$SHOW_RULES" -eq 1 ]; then
+  rice_show_rules
+  exit 0
+fi
+
+# offline modes need no GitHub access: --export (D33), --list-files (D32 GUI),
+# --explain / --show-rules (D42 diagnostics)
+if [ -n "$EXPORT_PATH" ] || [ "$LIST_FILES" -eq 1 ] \
+   || [ "$EXPLAIN" -eq 1 ] || [ "$SHOW_RULES" -eq 1 ]; then
   OFFLINE_MODE=1
 else
   OFFLINE_MODE=0
@@ -202,6 +236,15 @@ rice_scan_candidates "$RICE_HOME" "$SCANNER"
 # ---- user selection (D32): purely SUBTRACTIVE, applied AFTER the deny list
 # and the content scan so ticking something off can never bypass either layer
 rice_apply_user_excludes "$RICE_HOME" "$EXCLUDE_FROM"
+
+# ---- --explain (D42): offline verdict chain for the given paths (or a full
+# bucket dump). Runs after collection, scan AND selection so every bucket is
+# final; read-only, then exit.
+if [ "$EXPLAIN" -eq 1 ]; then
+  rice_explain "$RICE_HOME" ${EXPLAIN_PATHS[@]+"${EXPLAIN_PATHS[@]}"}
+  rice_info "explain complete: read-only, nothing was staged or pushed."
+  exit 0
+fi
 
 # ---- machine-readable candidate list for the GUI (D32 companion): one
 # "rel<TAB>bytes" line per surviving candidate, offline and read-only. Info

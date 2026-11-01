@@ -741,8 +741,8 @@ t25() { # D37 symlink following: fetch target content, coverage, deny-target,
   assert_is_link "t25 ancestor-overlap link kept as link" "$TW/clone/home/.config/quickshell/lme-shell/inner/up"
   assert_nofile "t25 deny-target link absent from repo" "$TW/clone/home/.config/mozilla-link"
   assert_file "t25 symlinks.tsv in repo" "$TW/clone/symlinks.tsv"
-  assert_file_match "t25 symlinks.tsv dir row" "$TW/clone/symlinks.tsv" ".config/quickshell/lme-shell"$'	'"../../dev/lme-shell"
-  assert_file_match "t25 symlinks.tsv file row" "$TW/clone/symlinks.tsv" ".config/app.conf"$'	'"../confs/app.conf"
+  assert_file_match "t25 symlinks.tsv dir row" "$TW/clone/symlinks.tsv" "$(printf '.config/quickshell/lme-shell\t../../dev/lme-shell')"
+  assert_file_match "t25 symlinks.tsv file row" "$TW/clone/symlinks.tsv" "$(printf '.config/app.conf\t../confs/app.conf')"
   assert_file_match "t25 SYMLINKS.md followed section" "$TW/clone/reports/SYMLINKS.md" "Followed"
   assert_file_match "t25 SYMLINKS.md kept section" "$TW/clone/reports/SYMLINKS.md" "Kept as symlinks"
   M=$(awk -F'\t' '$6=="home/.config/app.conf"{print $4}' "$TW/clone/manifest.tsv")
@@ -783,9 +783,92 @@ t25() { # D37 symlink following: fetch target content, coverage, deny-target,
   canaries_absent "t25 restored home (content came through the follow)"
 }
 
+t26() { # D42 R1 --explain / --show-rules: offline diagnostics, no auth/repo
+  TW=$SUITE/t26; mkdir -p "$TW/home"; make_home "$TW/home"
+  setup_env fedora
+  # extra fixture pieces for the remaining verdicts
+  mkdir -p "$TW/home/.config/myapp/cache" "$TW/home/Documents"
+  echo junk > "$TW/home/.config/myapp/cache/runtime.log"
+  echo notes > "$TW/home/Documents/notes.txt"
+
+  # --show-rules: offline, no repo/auth, section-stable output
+  out=$(backup --home "$TW/home" --show-rules); rc=$?
+  assert_rc "t26 show-rules rc (offline)" "$rc" 0
+  assert_match "t26 show-rules header" "$out" "=== rice-backup effective rules ==="
+  assert_match "t26 show-rules file cap" "$out" "file cap    : 50 MiB per file"
+  assert_match "t26 show-rules budget" "$out" "total budget: 1 GiB"
+  assert_match "t26 show-rules follow default" "$out" "symlinks    : follow=1 outside-home=0"
+  assert_match "t26 show-rules include file listed" "$out" ".bashrc"
+  assert_match "t26 show-rules include dir listed" "$out" ".config"
+  assert_match "t26 show-rules deny dir listed" "$out" ".ssh"
+  assert_match "t26 show-rules deny glob listed" "$out" "*history*"
+  assert_match "t26 show-rules etc allowlist" "$out" "/etc/dnf/dnf.conf"
+  assert_match "t26 show-rules no staging happened" "$out" "notes: deny rules are NAME-based"
+
+  # --explain PATH...: verdict chain per path. No --repo given and rc 0 prove
+  # the mode is offline (auth/repo blocks are skipped entirely).
+  out=$(backup --home "$TW/home" --explain .bash_history .profile \
+    .config/myapp/token.ini .config/bigapp/data.bin \
+    .config/myapp/cache/runtime.log Documents/notes.txt no-such-file); rc=$?
+  assert_rc "t26 explain rc (no auth, no repo)" "$rc" 0
+  assert_match "t26 explain header" "$out" "=== rice-backup explain ==="
+  assert_match "t26 explain home line" "$out" "home : $TW/home"
+  assert_match "t26 explain L1 rule named" "$out" "rule     : deny-file:.bash_history"
+  assert_match "t26 explain L1 layer" "$out" "layer    : L1 deny"
+  assert_match "t26 explain L1 verdict" "$out" "verdict  : excluded"
+  assert_match "t26 explain included candidate" "$out" "layer    : candidate"
+  assert_match "t26 explain L2 layer" "$out" "layer    : L2 scan"
+  assert_match "t26 explain L2 rule named" "$out" "rule     : scan:cred-assign"
+  assert_match "t26 explain size cap layer" "$out" "layer    : size cap"
+  assert_match "t26 explain size cap rule" "$out" "larger than 50 MiB"
+  assert_match "t26 explain L3 cache layer" "$out" "layer    : L3 cache"
+  assert_match "t26 explain outside roots" "$out" "outside every include root (see --show-rules)"
+  assert_match "t26 explain not found" "$out" "no such file or symlink in the home"
+
+  # path normalization: absolute-under-home accepted, other absolutes and ..
+  # are rejected with a reason (the run itself still exits 0)
+  out=$(backup --home "$TW/home" --explain "$TW/home/.bash_history"); rc=$?
+  assert_rc "t26 explain absolute-under-home rc" "$rc" 0
+  assert_match "t26 explain absolute-under-home normalized" "$out" "deny-file:.bash_history"
+  out=$(backup --home "$TW/home" --explain /etc/passwd); rc=$?
+  assert_rc "t26 explain outside-home absolute rc" "$rc" 0
+  assert_match "t26 explain outside-home message" "$out" "absolute path outside the home"
+  out=$(backup --home "$TW/home" --explain ../secret); rc=$?
+  assert_rc "t26 explain dotdot rc" "$rc" 0
+  assert_match "t26 explain dotdot rejected" "$out" "path must be home-relative without .."
+
+  # dump mode (no paths): every bucket with reasons
+  out=$(backup --home "$TW/home" --explain); rc=$?
+  assert_rc "t26 explain dump rc" "$rc" 0
+  assert_match "t26 dump included line" "$out" "included candidates : "
+  assert_match "t26 dump L1 section" "$out" "L1 deny      : "
+  assert_match "t26 dump L2 section" "$out" "L2 scan      : "
+  assert_match "t26 dump size section" "$out" "size cap     : "
+  assert_match "t26 dump cache section" "$out" "L3 cache     : "
+  assert_match "t26 dump scanhit with rule" "$out" ".config/myapp/token.ini [cred-assign]"
+  assert_match "t26 dump deny with rule" "$out" ".bash_history [deny-file:.bash_history]"
+
+  # --explain respects --exclude-from (selection bucket is populated too)
+  printf '.profile\n' > "$TW/sel.txt"
+  out=$(backup --home "$TW/home" --exclude-from "$TW/sel.txt" --explain .profile); rc=$?
+  assert_rc "t26 explain with selection rc" "$rc" 0
+  assert_match "t26 explain selection layer" "$out" "layer    : selection"
+  assert_match "t26 explain selection rule" "$out" "--exclude-from entry"
+
+  # positional paths after -- also work
+  out=$(backup --home "$TW/home" --explain -- .bash_history); rc=$?
+  assert_rc "t26 explain after -- rc" "$rc" 0
+  assert_match "t26 explain after -- parsed" "$out" "deny-file:.bash_history"
+
+  # unknown options are still rejected when --explain is absent
+  out=$(backup --home "$TW/home" --bogus-flag 2>&1); rc=$?
+  assert_rc "t26 unknown option still usage error" "$rc" 2
+  assert_match "t26 unknown option message" "$out" "unknown option: --bogus-flag"
+}
+
 # --------------------------------------------------------------------- runner
 printf 'rice-backup acceptance suite\n  root: %s\n  work: %s\n\n' "$ROOT" "$SUITE"
-TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23 t24 t25"
+TESTS="t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20 t21 t22 t23 t24 t25 t26"
 for t in $TESTS; do
   printf '%s\n' "-- $t"
   ( "$t" ) || true

@@ -377,6 +377,11 @@ over recollection. Never write secrets here.
 - [s9] RAN the 6-question design round: hard core BROAD; ack WITH rails;
   rules.conf shared CLI+GUI; free home-relative roots; flags+rules sizes;
   backend-first R1->R5. Recorded as D38–D42 (DECIDED).
+- [s9] RAN plan milestone: docs committed + PUSHED as 366d847 (S4 clean).
+- [s9] RAN R1 diagnostics milestone: --explain/--show-rules shipped, t26
+  added (46 assertions), suite **402/0**; found+fixed the Edit-tool tab
+  normalization quirk in t25 needles (runtime printf tabs now, see journal
+  09); committing + pushing next.
 
 ## NEXT SESSION bootstrap (when the user returns)
 1. Standard four checks (see "Checks to re-run" above). Expected: origin/main

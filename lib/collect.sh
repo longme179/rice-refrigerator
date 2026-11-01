@@ -836,3 +836,158 @@ rice_make_manifest() { # $1 stage
         ! -name symlinks.tsv -print0 | sort -z)
   )
 }
+
+# ---- diagnostics (D42, milestone R1): offline, read-only ---------------------
+
+# Is a home-relative path inside the regions the walk considers at all?
+# (a RICE_HOME_FILES entry, anything under a RICE_HOME_DIRS root, or inside a
+# region fetched via a followed link). --explain uses this to distinguish
+# "decided against" from "never was a candidate".
+rice_path_walked() { # $1 rel path -> 0 when considered by the walk
+  local rel=$1 p
+  for p in "${RICE_HOME_FILES[@]}"; do
+    [ "$rel" = "$p" ] && return 0
+  done
+  for p in "${RICE_HOME_DIRS[@]}"; do
+    if [ "$rel" = "$p" ] || [[ "$rel" == "$p"/* ]]; then return 0; fi
+  done
+  for p in "${RICE_COVERED_REL[@]}"; do
+    if [ -n "$p" ] && { [ "$rel" = "$p" ] || [[ "$rel" == "$p"/* ]]; }; then return 0; fi
+  done
+  return 1
+}
+
+# --show-rules: print the effective rule set. No walk, no auth, no repo. The
+# output is section-stable so tests (and later the GUI) can parse it. Per-entry
+# source marks (default / rules.conf / flag) and hard/soft deny marks are added
+# by the milestones that introduce them (R2 / R3).
+rice_show_rules() {
+  local i
+  printf '=== rice-backup effective rules ===\n'
+  printf 'version     : %s\n' "$RICE_VERSION"
+  printf 'file cap    : %s per file (GitHub rejects files >100 MiB)\n' \
+    "$(rice_hr_size "$RICE_MAX_FILE_BYTES")"
+  printf 'total budget: %s (a real run above it needs --allow-oversize)\n' \
+    "$(rice_hr_size "$RICE_TOTAL_MAX_BYTES")"
+  printf 'symlinks    : follow=%s outside-home=%s\n' \
+    "${RICE_FOLLOW:-1}" "${RICE_FOLLOW_OUTSIDE:-0}"
+  printf '\ninclude files (top-level, exact name under the home):\n'
+  if [ ${#RICE_HOME_FILES[@]} -eq 0 ]; then printf '  (none)\n'; fi
+  for i in "${RICE_HOME_FILES[@]}"; do printf '  %s\n' "$i"; done
+  printf '\ninclude dirs (walked recursively):\n'
+  if [ ${#RICE_HOME_DIRS[@]} -eq 0 ]; then printf '  (none)\n'; fi
+  for i in "${RICE_HOME_DIRS[@]}"; do printf '  %s\n' "$i"; done
+  printf '\ndeny dirs (L1, path prefixes):\n'
+  for i in "${RICE_DENY_DIRS[@]}"; do printf '  %s\n' "$i"; done
+  printf '\ndeny file globs (L1, matched against the whole path):\n'
+  for i in "${RICE_DENY_GLOBS[@]}"; do printf '  %s\n' "$i"; done
+  printf '\ncache/junk patterns (L3): .cache/**, */cache|Cache|caches/**,\n'
+  printf '  node_modules, __pycache__, .npm, .git, Trash, .config/fcitx/dbus, *.log\n'
+  printf '\n/etc allowlist (only with --include-system):\n'
+  for i in "${RICE_ETC_FILES[@]}" "${RICE_ETC_GLOBS[@]}"; do printf '  %s\n' "$i"; done
+  printf '\nnotes: deny rules are NAME-based. --explain PATH reports which layer\n'
+  printf 'and rule claims any given path.\n'
+}
+
+# --explain: verdict chain for the given paths, or a full bucket dump when no
+# path is given. Runs AFTER collection, content scan and user selection, so
+# every bucket reflects exactly what a real run would decide. Read-only; the
+# caller exits right after. Buckets are disjoint by construction, so the first
+# match wins and the order of the lookups is only presentation.
+rice_explain() { # $1 home; $2... paths ("" = dump every bucket)
+  local home=$1; shift
+  local p rel i verdict layer rule
+  printf '=== rice-backup explain ===\n'
+  printf 'home : %s\n' "$home"
+  if [ "$#" -gt 0 ]; then
+    for p in "$@"; do
+      rel=$p
+      case "$rel" in
+        "$home"/*) rel=${rel#"$home"/} ;;
+        /*)
+          printf '%s\n      verdict  : not explainable\n' "$p"
+          printf '      rule     : absolute path outside the home\n'
+          continue
+          ;;
+      esac
+      case "$rel" in
+        *..*|.|'')
+          printf '%s\n      verdict  : not explainable\n' "$p"
+          printf '      rule     : path must be home-relative without ..\n'
+          continue
+          ;;
+      esac
+      verdict=""; layer=""; rule=""
+      for i in "${RICE_DENIED[@]}"; do
+        [ "${i%%$'\t'*}" = "$rel" ] || continue
+        verdict=excluded; layer='L1 deny'; rule=${i#*$'\t'}; break
+      done
+      [ -n "$verdict" ] || for i in "${RICE_SCANHITS[@]}"; do
+        [ "${i%%$'\t'*}" = "$rel" ] || continue
+        verdict=excluded; layer='L2 scan'; rule="scan:${i#*$'\t'}"; break
+      done
+      [ -n "$verdict" ] || for i in "${RICE_USER_EXCL[@]}"; do
+        [ "${i%%$'\t'*}" = "$rel" ] || continue
+        verdict=excluded; layer='selection'; rule='--exclude-from entry'; break
+      done
+      [ -n "$verdict" ] || for i in "${RICE_SKIPPED_BIG[@]}"; do
+        [ "${i%%$'\t'*}" = "$rel" ] || continue
+        verdict=skipped; layer='size cap'
+        rule="larger than $(rice_hr_size "$RICE_MAX_FILE_BYTES") ($(rice_hr_size "${i#*$'\t'}"))"
+        break
+      done
+      [ -n "$verdict" ] || for i in "${RICE_SKIPPED_CACHE[@]}"; do
+        [ "$i" = "$rel" ] || [ "$i" = "$rel/" ] || [ "$i" = "$rel (stat failed)" ] || continue
+        verdict=skipped; layer='L3 cache'; rule='cache/junk path pattern'; break
+      done
+      [ -n "$verdict" ] || for i in "${RICE_LINK_STATUS[@]}"; do
+        [ "${i%%$'\t'*}" = "$rel" ] || continue
+        verdict=included; layer='symlink'
+        rule="kept as link: $(printf '%s' "$i" | cut -f3): $(printf '%s' "$i" | cut -f4)"
+        break
+      done
+      [ -n "$verdict" ] || for i in "${RICE_LINKS[@]}"; do
+        [ "${i%%$'\t'*}" = "$rel" ] || continue
+        verdict=included; layer='symlink'; rule='followed: target content fetched'; break
+      done
+      [ -n "$verdict" ] || for i in "${RICE_INCLUDE[@]}"; do
+        [ "$i" = "$rel" ] || continue
+        verdict=included; layer='candidate'; rule='passes every layer; will be staged'; break
+      done
+      printf '%s\n' "$rel"
+      if [ -n "$verdict" ]; then
+        printf '      verdict  : %s\n' "$verdict"
+        printf '      layer    : %s\n' "$layer"
+        printf '      rule     : %s\n' "$rule"
+      elif [ ! -e "$home/$rel" ] && [ ! -L "$home/$rel" ]; then
+        printf '      verdict  : not found\n'
+        printf '      layer    : -\n'
+        printf '      rule     : no such file or symlink in the home\n'
+      elif rice_path_walked "$rel"; then
+        printf '      verdict  : not collected\n'
+        printf '      layer    : walk\n'
+        printf '      rule     : only files and symlinks are collected (directory or special?)\n'
+      else
+        printf '      verdict  : not considered\n'
+        printf '      layer    : include roots\n'
+        printf '      rule     : outside every include root (see --show-rules)\n'
+      fi
+    done
+  else
+    printf 'included candidates : %s file(s), %s\n' "${#RICE_INCLUDE[@]}" "$(rice_hr_size "$RICE_TOTAL_BYTES")"
+    printf 'followed symlinks   : %s\n' "${#RICE_LINKS[@]}"
+    printf 'kept symlinks       : %s\n' "${#RICE_LINK_STATUS[@]}"
+    printf '\nexcluded:\n'
+    printf '  L1 deny      : %s item(s)\n' "${#RICE_DENIED[@]}"
+    for i in "${RICE_DENIED[@]}"; do printf '    %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
+    printf '  L2 scan      : %s item(s)\n' "${#RICE_SCANHITS[@]}"
+    for i in "${RICE_SCANHITS[@]}"; do printf '    %s [%s]\n' "${i%%$'\t'*}" "${i#*$'\t'}"; done
+    printf '  selection    : %s item(s)\n' "${#RICE_USER_EXCL[@]}"
+    for i in "${RICE_USER_EXCL[@]}"; do printf '    %s [--exclude-from]\n' "${i%%$'\t'*}"; done
+    printf '\nskipped:\n'
+    printf '  size cap     : %s item(s)\n' "${#RICE_SKIPPED_BIG[@]}"
+    for i in "${RICE_SKIPPED_BIG[@]}"; do printf '    %s (%s)\n' "${i%%$'\t'*}" "$(rice_hr_size "${i#*$'\t'}")"; done
+    printf '  L3 cache     : %s item(s)\n' "${#RICE_SKIPPED_CACHE[@]}"
+    for i in "${RICE_SKIPPED_CACHE[@]}"; do printf '    %s\n' "$i"; done
+  fi
+}
